@@ -152,7 +152,7 @@ declare global {
       'player.isEqualizerEnabled': boolean
 
       /**
-       * 均衡器各频段增益（毫贝），5个频段
+       * 均衡器各频段增益（毫贝），20个频段：20 31 45 63 80 125 250 500 800 1k 1.25k 2k 3.15k 4k 6.3k 8k 10k 12.5k 16k 20k Hz
        */
       'player.equalizerBands': number[]
 

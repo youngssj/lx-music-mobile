@@ -4,6 +4,7 @@
   "versionCode": 74,
   "private": true,
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "react-native run-android --active-arch-only",
     "ios": "react-native run-ios",
     "start": "react-native start",
@@ -88,6 +89,7 @@
     "eslint-config-standard-with-typescript": "^43.0.1",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^5.2.0",
+    "patch-package": "^8.0.0",
     "typescript": "^5.9.3"
   },
   "overrides": {

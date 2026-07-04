@@ -1,0 +1,446 @@
+diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java
+new file mode 100644
+index 0000000..1b7dbd5
+--- /dev/null
++++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java
+@@ -0,0 +1,249 @@
++package com.guichaguri.trackplayer.audio;
++
++import androidx.annotation.NonNull;
++import androidx.media3.common.C;
++import androidx.media3.common.AudioFormat;
++import androidx.media3.common.audio.AudioProcessor;
++import androidx.media3.common.audio.BaseAudioProcessor;
++import androidx.media3.common.util.UnstableApi;
++
++import java.nio.ByteBuffer;
++
++/**
++ * 自建 20 段图形均衡器：内部串联 20 个 biquad peaking 滤波器（Direct Form II Transposed）。
++ * 频段中心频率（Hz）：
++ * 20 31 45 63 80 125 250 500 800 1000 1250 2000 3150 4000 6300 8000 10000 12500 16000 20000
++ *
++ * 设计要点：
++ * - onConfigure 始终返回输入格式（恒 active），关闭时内部旁路，规避 media3 运行时切换 active 不生效的问题。
++ * - 同时支持 ENCODING_PCM_16BIT（主路径）与 ENCODING_PCM_FLOAT（防御）。
++ * - 每声道独立 biquad 状态；onFlush 清零延迟寄存器，杜绝 seek/换曲残响。
++ * - 增益/系数更新采用「复制-替换」+ volatile，音频线程无锁读取。
++ */
++@UnstableApi
++public class EqualizerAudioProcessor extends BaseAudioProcessor {
++
++    /** 20 段中心频率（Hz） */
++    public static final double[] BAND_FREQS = {
++        20, 31, 45, 63, 80, 125, 250, 500, 800, 1000,
++        1250, 2000, 3150, 4000, 6300, 8000, 10000, 12500, 16000, 20000
++    };
++    public static final int BAND_COUNT = BAND_FREQS.length;
++    /** Q 因子（约等于根号 2，约 1 倍频程带宽） */
++    public static final double Q = 1.41;
++
++    /** 单段归一化系数（a0 = 1） */
++    private static final class CoefSet {
++        final float b0, b1, b2, a1, a2;
++        CoefSet(double b0, double b1, double b2, double a1, double a2) {
++            this.b0 = (float) b0;
++            this.b1 = (float) b1;
++            this.b2 = (float) b2;
++            this.a1 = (float) a1;
++            this.a2 = (float) a2;
++        }
++    }
++
++    /** 全 0 增益（旁路）时的系数快照，避免重复构建 */
++    private static final CoefSet[] FLAT = new CoefSet[BAND_COUNT];
++    static {
++        for (int i = 0; i < BAND_COUNT; i++) FLAT[i] = new CoefSet(1, 0, 0, 0, 0);
++    }
++
++    /** 来自 RN bridge 的增益（dB），volatile 引用整体替换 */
++    private volatile double[] gainsDb = new double[BAND_COUNT];
++    private volatile boolean enabled = false;
++
++    /** 当前生效系数快照（按采样率构建） */
++    private volatile CoefSet[] coefs = FLAT;
++    private volatile int activeSampleRate = -1;
++    private volatile int activeEncoding = C.ENCODING_PCM_16BIT;
++
++    /** 每声道、每段 DF2T 状态：state[ch][band] = {z1, z2} */
++    private float[][][] state;
++    private int channelCount = 0;
++
++    private final Object lock = new Object();
++
++    /** 设置是否启用均衡（关闭则内部旁路）。可由 RN bridge 线程调用 */
++    public void setEnabled(boolean enabled) {
++        synchronized (lock) {
++            this.enabled = enabled;
++            rebuildCoefficientsLocked();
++        }
++    }
++
++    /**
++     * 设置某频段增益
++     *
++     * @param band   频段索引 0..BAND_COUNT-1
++     * @param gainDb 增益（dB），范围约 -15..+15
++     */
++    public void setBandLevel(int band, double gainDb) {
++        if (band < 0 || band >= BAND_COUNT) return;
++        synchronized (lock) {
++            double[] next = new double[BAND_COUNT];
++            System.arraycopy(gainsDb, 0, next, 0, BAND_COUNT);
++            next[band] = gainDb;
++            gainsDb = next;
++            rebuildCoefficientsLocked();
++        }
++    }
++
++    /** 一次性设置全部频段增益（按索引对齐，缺失补 0） */
++    public void setBandLevels(double[] gains) {
++        double[] next = new double[BAND_COUNT];
++        int n = Math.min(BAND_COUNT, gains == null ? 0 : gains.length);
++        for (int i = 0; i < n; i++) next[i] = gains[i];
++        synchronized (lock) {
++            gainsDb = next;
++            rebuildCoefficientsLocked();
++        }
++    }
++
++    /** 在 lock 内重建系数。采样率未确定时先记下增益，等 onConfigure 再建 */
++    private void rebuildCoefficientsLocked() {
++        int fs = activeSampleRate;
++        if (fs <= 0) {
++            coefs = FLAT;
++            return;
++        }
++        double[] gains = gainsDb;
++        if (!enabled || !hasNonZeroGain(gains)) {
++            coefs = FLAT;
++            return;
++        }
++        CoefSet[] built = new CoefSet[BAND_COUNT];
++        for (int i = 0; i < BAND_COUNT; i++) {
++            built[i] = computeCoeffs(BAND_FREQS[i], gains[i], Q, fs);
++        }
++        coefs = built; // volatile 整体替换
++    }
++
++    private static boolean hasNonZeroGain(double[] gains) {
++        for (double g : gains) {
++            if (Math.abs(g) > 1e-6) return true;
++        }
++        return false;
++    }
++
++    /** Audio EQ Cookbook peaking filter，返回归一化（a0=1）系数 */
++    private static CoefSet computeCoeffs(double f0, double dbg, double q, double fs) {
++        double w0 = 2.0 * Math.PI * f0 / fs;
++        double cosW0 = Math.cos(w0);
++        double sinW0 = Math.sin(w0);
++        double a = Math.pow(10.0, dbg / 40.0);
++        double alpha = sinW0 / (2.0 * q);
++
++        double b0 = 1.0 + alpha * a;
++        double b1 = -2.0 * cosW0;
++        double b2 = 1.0 - alpha * a;
++        double a0 = 1.0 + alpha / a;
++        double a1 = -2.0 * cosW0;
++        double a2 = 1.0 - alpha / a;
++
++        return new CoefSet(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0);
++    }
++
++    @NonNull
++    @Override
++    protected AudioFormat onConfigure(AudioFormat in) throws AudioProcessor.UnhandledAudioFormatException {
++        if (in.encoding != C.ENCODING_PCM_16BIT && in.encoding != C.ENCODING_PCM_FLOAT) {
++            throw new AudioProcessor.UnhandledAudioFormatException(in);
++        }
++        if (in.channelCount < 1 || in.channelCount > 2) {
++            throw new AudioProcessor.UnhandledAudioFormatException(in);
++        }
++        synchronized (lock) {
++            boolean changed = in.channelCount != channelCount
++                    || in.sampleRate != activeSampleRate
++                    || in.encoding != activeEncoding;
++            if (changed) {
++                channelCount = in.channelCount;
++                activeSampleRate = in.sampleRate;
++                activeEncoding = in.encoding;
++                state = new float[channelCount][BAND_COUNT][2]; // 全 0
++                rebuildCoefficientsLocked();
++            }
++        }
++        return in; // 输出格式与输入一致 → 恒 active
++    }
++
++    @Override
++    public void queueInput(ByteBuffer input) {
++        int remaining = input.remaining();
++        ByteBuffer out = replaceOutputBuffer(remaining);
++        float[][][] st = state;
++        if (st == null || channelCount == 0) {
++            // 未配置时直接透传（media3 正常流程不会进入此分支）
++            out.put(input);
++            out.flip();
++            return;
++        }
++        boolean isFloat = (activeEncoding == C.ENCODING_PCM_FLOAT);
++        int bytesPerSample = isFloat ? 4 : 2;
++        int frames = remaining / (bytesPerSample * channelCount);
++        CoefSet[] c = coefs; // volatile 读一次
++        boolean bypass = (c == FLAT); // 全 0 增益或关闭 → 旁路（仅做格式透传）
++
++        if (!isFloat) {
++            for (int f = 0; f < frames; f++) {
++                for (int ch = 0; ch < channelCount; ch++) {
++                    float x = input.getShort() / 32768.0f;
++                    if (!bypass) x = processChannel(st[ch], c, x);
++                    float clamped = x > 1f ? 1f : (x < -1f ? -1f : x);
++                    out.putShort((short) (clamped * 32767.0f));
++                }
++            }
++        } else {
++            for (int f = 0; f < frames; f++) {
++                for (int ch = 0; ch < channelCount; ch++) {
++                    float x = input.getFloat();
++                    if (!bypass) x = processChannel(st[ch], c, x);
++                    out.putFloat(x);
++                }
++            }
++        }
++        out.flip();
++    }
++
++    /** 串联 20 段 DF2T 处理单声道样本 */
++    private static float processChannel(float[][] chState, CoefSet[] c, float x) {
++        for (int b = 0; b < BAND_COUNT; b++) {
++            CoefSet k = c[b];
++            float[] z = chState[b];
++            float y = k.b0 * x + z[0];
++            z[0] = k.b1 * x - k.a1 * y + z[1];
++            z[1] = k.b2 * x - k.a2 * y;
++            x = y;
++        }
++        return x;
++    }
++
++    @Override
++    protected void onFlush() {
++        clearState();
++    }
++
++    @Override
++    protected void onReset() {
++        synchronized (lock) {
++            channelCount = 0;
++            activeSampleRate = -1;
++            coefs = FLAT;
++        }
++        clearState();
++        state = null;
++    }
++
++    private void clearState() {
++        float[][][] st = state;
++        if (st == null) return;
++        for (int ch = 0; ch < st.length; ch++) {
++            for (int b = 0; b < BAND_COUNT; b++) {
++                st[ch][b][0] = 0f;
++                st[ch][b][1] = 0f;
++            }
++        }
++    }
++}
+diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerRenderersFactory.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerRenderersFactory.java
+new file mode 100644
+index 0000000..459b1e8
+--- /dev/null
++++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerRenderersFactory.java
+@@ -0,0 +1,35 @@
++package com.guichaguri.trackplayer.audio;
++
++import android.content.Context;
++
++import androidx.annotation.NonNull;
++import androidx.media3.common.util.UnstableApi;
++import androidx.media3.exoplayer.DefaultRenderersFactory;
++import androidx.media3.exoplayer.audio.AudioSink;
++import androidx.media3.exoplayer.audio.DefaultAudioSink;
++
++/**
++ * 在构建音频渲染器时，把 {@link EqualizerAudioProcessor} 注入到 {@link DefaultAudioSink} 的
++ * 音频处理链中。media3 1.8.0 的 DefaultRenderersFactory 未公开 setAudioProcessors，因此通过
++ * 重写 buildAudioSink 来挂载。
++ */
++@UnstableApi
++public class EqualizerRenderersFactory extends DefaultRenderersFactory {
++
++    @NonNull
++    private final EqualizerAudioProcessor equalizer;
++
++    public EqualizerRenderersFactory(@NonNull Context context, @NonNull EqualizerAudioProcessor equalizer) {
++        super(context);
++        this.equalizer = equalizer;
++    }
++
++    @Override
++    protected AudioSink buildAudioSink(Context context, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams) {
++        return new DefaultAudioSink.Builder(context)
++                .setEnableFloatOutput(enableFloatOutput)
++                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
++                .setAudioProcessors(new androidx.media3.common.audio.AudioProcessor[]{ equalizer })
++                .build();
++    }
++}
+diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
+index dba2794..f752594 100644
+--- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
++++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
+@@ -30,6 +30,7 @@ import com.guichaguri.trackplayer.service.Utils;
+ import com.guichaguri.trackplayer.service.models.NowPlayingMetadata;
+ import com.guichaguri.trackplayer.service.models.Track;
+ import com.guichaguri.trackplayer.service.player.ExoPlayback;
++import com.guichaguri.trackplayer.audio.EqualizerAudioProcessor;
+ 
+ import java.util.ArrayDeque;
+ import java.util.ArrayList;
+@@ -521,4 +522,20 @@ public class MusicModule extends ReactContextBaseJavaModule implements ServiceCo
+             waitForConnection(() -> callback.resolve(binder.getPlayback().getState()));
+         }
+     }
++
++    @ReactMethod
++    public void setEqualizerEnabled(final boolean enabled) {
++        waitForConnection(() -> {
++            EqualizerAudioProcessor eq = binder.getEqualizerProcessor();
++            if (eq != null) eq.setEnabled(enabled);
++        });
++    }
++
++    @ReactMethod
++    public void setEqualizerBandLevel(final double band, final double level) {
++        waitForConnection(() -> {
++            EqualizerAudioProcessor eq = binder.getEqualizerProcessor();
++            if (eq != null) eq.setBandLevel((int) band, level / 100.0);
++        });
++    }
+ }
+diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
+index 9f0c19a..d1a11a8 100644
+--- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
++++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
+@@ -10,6 +10,7 @@ import com.facebook.react.bridge.Promise;
+ import com.guichaguri.trackplayer.service.metadata.MetadataManager;
+ import com.guichaguri.trackplayer.service.models.NowPlayingMetadata;
+ import com.guichaguri.trackplayer.service.player.ExoPlayback;
++import com.guichaguri.trackplayer.audio.EqualizerAudioProcessor;
+ 
+ /**
+  * @author Guichaguri
+@@ -29,6 +30,10 @@ public class MusicBinder extends Binder {
+         service.handler.post(r);
+     }
+ 
++    public EqualizerAudioProcessor getEqualizerProcessor() {
++        return manager == null ? null : manager.equalizerProcessor;
++    }
++
+     public ExoPlayback getPlayback() {
+         ExoPlayback playback = manager.getPlayback();
+ 
+diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
+index 73f54b8..baf8745 100644
+--- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
++++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
+@@ -34,6 +34,8 @@ import com.guichaguri.trackplayer.service.metadata.MetadataManager;
+ import com.guichaguri.trackplayer.service.models.Track;
+ import com.guichaguri.trackplayer.service.player.ExoPlayback;
+ import com.guichaguri.trackplayer.service.player.LocalPlayback;
++import com.guichaguri.trackplayer.audio.EqualizerAudioProcessor;
++import com.guichaguri.trackplayer.audio.EqualizerRenderersFactory;
+ 
+ /**
+  * @author Guichaguri
+@@ -49,6 +51,9 @@ public class MusicManager {
+     private final MetadataManager metadata;
+     private ExoPlayback playback;
+ 
++    /** 自建均衡器处理器（createLocalPlayback 时创建） */
++    public volatile EqualizerAudioProcessor equalizerProcessor;
++
+     // @RequiresApi(26)
+     // private AudioFocusRequest focus = null;
+     // private boolean hasAudioFocus = false;
+@@ -136,7 +141,9 @@ public class MusicManager {
+                 .setBackBuffer(backBuffer, false)
+                 .build();
+ 
+-        DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(service);
++        EqualizerAudioProcessor equalizerProcessor = new EqualizerAudioProcessor();
++        this.equalizerProcessor = equalizerProcessor;
++        DefaultRenderersFactory renderersFactory = new EqualizerRenderersFactory(service, equalizerProcessor);
+ 
+         ExoPlayer player = new ExoPlayer.Builder(service, renderersFactory)
+                 .setLoadControl(control)
+diff --git a/node_modules/react-native-track-player/lib/trackPlayer.d.ts b/node_modules/react-native-track-player/lib/trackPlayer.d.ts
+index d749cd9..018946d 100644
+--- a/node_modules/react-native-track-player/lib/trackPlayer.d.ts
++++ b/node_modules/react-native-track-player/lib/trackPlayer.d.ts
+@@ -22,6 +22,8 @@ declare function stop(): Promise<void>;
+ declare function seekTo(position: number): Promise<void>;
+ declare function setVolume(level: number): Promise<void>;
+ declare function setRate(rate: number): Promise<void>;
++declare function setEqualizerEnabled(enabled: boolean): Promise<void>;
++declare function setEqualizerBandLevel(band: number, level: number): Promise<void>;
+ declare function setRepeatMode(mode: RepeatMode): Promise<RepeatMode>;
+ declare function getVolume(): Promise<number>;
+ declare function getRate(): Promise<number>;
+@@ -59,6 +61,8 @@ declare const _default: {
+     seekTo: typeof seekTo;
+     setVolume: typeof setVolume;
+     setRate: typeof setRate;
++    setEqualizerEnabled: typeof setEqualizerEnabled;
++    setEqualizerBandLevel: typeof setEqualizerBandLevel;
+     setRepeatMode: typeof setRepeatMode;
+     getVolume: typeof getVolume;
+     getRate: typeof getRate;
+diff --git a/node_modules/react-native-track-player/lib/trackPlayer.js b/node_modules/react-native-track-player/lib/trackPlayer.js
+index b3cd005..d72c06f 100644
+--- a/node_modules/react-native-track-player/lib/trackPlayer.js
++++ b/node_modules/react-native-track-player/lib/trackPlayer.js
+@@ -288,6 +288,24 @@ function setRate(rate) {
+         });
+     });
+ }
++function setEqualizerEnabled(enabled) {
++    return __awaiter(this, void 0, void 0, function () {
++        return __generator(this, function (_a) {
++            if (!isSetupedPlayer)
++                return [2 /*return*/, Promise.resolve()];
++            return [2 /*return*/, TrackPlayer.setEqualizerEnabled(enabled)];
++        });
++    });
++}
++function setEqualizerBandLevel(band, level) {
++    return __awaiter(this, void 0, void 0, function () {
++        return __generator(this, function (_a) {
++            if (!isSetupedPlayer)
++                return [2 /*return*/, Promise.resolve()];
++            return [2 /*return*/, TrackPlayer.setEqualizerBandLevel(band, level)];
++        });
++    });
++}
+ function setRepeatMode(mode) {
+     return __awaiter(this, void 0, void 0, function () {
+         return __generator(this, function (_a) {
+@@ -450,6 +468,8 @@ exports.default = {
+     seekTo: seekTo,
+     setVolume: setVolume,
+     setRate: setRate,
++    setEqualizerEnabled: setEqualizerEnabled,
++    setEqualizerBandLevel: setEqualizerBandLevel,
+     setRepeatMode: setRepeatMode,
+     // MARK: - Getters
+     getVolume: getVolume,

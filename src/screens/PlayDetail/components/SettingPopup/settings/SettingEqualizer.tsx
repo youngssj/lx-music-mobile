@@ -10,8 +10,8 @@ import { setEqualizerEnabled, setEqualizerBandLevel } from '@/plugins/player'
 import settingState from '@/store/setting/state'
 import CheckBox from '@/components/common/CheckBox'
 
-// Android Equalizer 频段标签（典型5段）
-const BAND_LABELS = ['60Hz', '230Hz', '910Hz', '3.6kHz', '14kHz']
+// 自建 20 段均衡器频段标签：20 31 45 63 80 125 250 500 800 1k 1.25k 2k 3.15k 4k 6.3k 8k 10k 12.5k 16k 20k Hz
+const BAND_LABELS = ['20Hz', '31Hz', '45Hz', '63Hz', '80Hz', '125Hz', '250Hz', '500Hz', '800Hz', '1kHz', '1.25kHz', '2kHz', '3.15kHz', '4kHz', '6.3kHz', '8kHz', '10kHz', '12.5kHz', '16kHz', '20kHz']
 // 均衡器增益范围：-15dB ~ +15dB，单位：毫贝（millibel），1dB = 100mb
 const MIN_DB = -15
 const MAX_DB = 15
@@ -34,13 +34,14 @@ export default () => {
 
   const handleBandComplete = (bandIndex: number): SliderProps['onSlidingComplete'] => value => {
     value = Math.round(value)
-    const newBands = [...settingState.setting['player.equalizerBands']]
-    newBands[bandIndex] = value
+    // 以 BAND_LABELS 长度为准归一化，兼容旧版（5段）持久化数据，避免产生稀疏数组
+    const cur = settingState.setting['player.equalizerBands']
+    const newBands = BAND_LABELS.map((_, i) => i === bandIndex ? value : (Array.isArray(cur) && cur.length > i ? cur[i] : 0))
     updateSetting({ 'player.equalizerBands': newBands })
   }
 
   const handleReset = () => {
-    const zeroBands = [0, 0, 0, 0, 0]
+    const zeroBands = BAND_LABELS.map(() => 0)
     updateSetting({ 'player.equalizerBands': zeroBands })
     zeroBands.forEach((_, i) => {
       void setEqualizerBandLevel(i, 0)
@@ -102,7 +103,7 @@ const styles = createStyle({
     marginBottom: 4,
   },
   bandLabel: {
-    width: 55,
+    width: 60,
     fontSize: 12,
   },
   bandValue: {

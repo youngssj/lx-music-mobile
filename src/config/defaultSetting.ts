@@ -24,7 +24,7 @@ const defaultSetting: LX.AppSetting = {
   'player.playbackRate': 1,
   'player.isPlaybackRateChangePitch': false,
   'player.isEqualizerEnabled': false,
-  'player.equalizerBands': [0, 0, 0, 0, 0],
+  'player.equalizerBands': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   'player.cacheSize': '1024',
   'player.timeoutExit': '',
   'player.timeoutExitPlayed': true,
