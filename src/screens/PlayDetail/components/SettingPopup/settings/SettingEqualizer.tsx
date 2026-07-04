@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { View } from 'react-native'
+import { View, TouchableOpacity } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import Text from '@/components/common/Text'
 import { useSettingValue } from '@/store/setting/hook'
@@ -17,6 +17,9 @@ const BAND_LABELS = ['20Hz', '31Hz', '45Hz', '63Hz', '80Hz', '125Hz', '250Hz', '
 const MIN_DB = -15
 const MAX_DB = 15
 
+// 以 0.5 dB 为步进格式化增益：3 -> "+3.0"、-5.5 -> "-5.5"、0 -> "0.0"
+const formatDb = (v: number) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1))
+
 export default () => {
   const theme = useTheme()
   const isEnabled = useSettingValue('player.isEqualizerEnabled')
@@ -30,15 +33,27 @@ export default () => {
   }
 
   const handleBandChange = (bandIndex: number): SliderProps['onValueChange'] => value => {
-    value = Math.round(value)
+    value = Math.round(value * 2) / 2 // 规整到 0.5 dB
     void setEqualizerBandLevel(bandIndex, value * 100)
   }
 
   const handleBandComplete = (bandIndex: number): SliderProps['onSlidingComplete'] => value => {
-    value = Math.round(value)
+    value = Math.round(value * 2) / 2 // 规整到 0.5 dB
     // 以 BAND_LABELS 长度为准归一化，兼容旧版（5段）持久化数据，避免产生稀疏数组
     const cur = settingState.setting['player.equalizerBands']
     const newBands = BAND_LABELS.map((_, i) => i === bandIndex ? value : (Array.isArray(cur) && cur.length > i ? cur[i] : 0))
+    updateSetting({ 'player.equalizerBands': newBands })
+  }
+
+  // 按钮精确微调：每次 ±0.5 dB（规整到 0.5 + 钳到 [-15, 15]），同时实时下发与持久化
+  const handleBandAdjust = (bandIndex: number, delta: number) => {
+    const cur = Array.isArray(bands) && bands.length > bandIndex ? bands[bandIndex] : 0
+    let next = Math.round((cur + delta) * 2) / 2
+    if (next < MIN_DB) next = MIN_DB
+    if (next > MAX_DB) next = MAX_DB
+    void setEqualizerBandLevel(bandIndex, next * 100)
+    const curBands = settingState.setting['player.equalizerBands']
+    const newBands = BAND_LABELS.map((_, i) => i === bandIndex ? next : (Array.isArray(curBands) && curBands.length > i ? curBands[i] : 0))
     updateSetting({ 'player.equalizerBands': newBands })
   }
 
@@ -65,16 +80,32 @@ export default () => {
             return (
               <View key={index} style={styles.bandRow}>
                 <Text style={styles.bandLabel} color={theme['c-font-label']}>{label}</Text>
+                <TouchableOpacity
+                  style={[styles.bandBtn, { borderColor: theme['c-primary-alpha-500'], opacity: value <= MIN_DB ? 0.35 : 1 }]}
+                  onPress={() => handleBandAdjust(index, -0.5)}
+                  disabled={value <= MIN_DB}
+                  activeOpacity={0.5}
+                >
+                  <Text style={styles.bandBtnText} color={theme['c-font-label']}>−</Text>
+                </TouchableOpacity>
                 <Slider
                   key={`${index}-${resetKey}`}
                   minimumValue={MIN_DB}
                   maximumValue={MAX_DB}
                   onValueChange={handleBandChange(index)}
                   onSlidingComplete={handleBandComplete(index)}
-                  step={1}
+                  step={0.5}
                   value={value}
                 />
-                <Text style={styles.bandValue} color={theme['c-font-label']}>{value > 0 ? `+${value}` : `${value}`}</Text>
+                <TouchableOpacity
+                  style={[styles.bandBtn, { borderColor: theme['c-primary-alpha-500'], opacity: value >= MAX_DB ? 0.35 : 1 }]}
+                  onPress={() => handleBandAdjust(index, 0.5)}
+                  disabled={value >= MAX_DB}
+                  activeOpacity={0.5}
+                >
+                  <Text style={styles.bandBtnText} color={theme['c-font-label']}>+</Text>
+                </TouchableOpacity>
+                <Text style={styles.bandValue} color={theme['c-font-label']}>{formatDb(value)}</Text>
               </View>
             )
           })}
@@ -110,6 +141,20 @@ const styles = createStyle({
   bandLabel: {
     width: 60,
     fontSize: 12,
+  },
+  bandBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 3,
+  },
+  bandBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 18,
   },
   bandValue: {
     width: 40,

@@ -1,9 +1,9 @@
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java
 new file mode 100644
-index 0000000..674f8f5
+index 0000000..a86d1d3
 --- /dev/null
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,253 @@
 +package com.guichaguri.trackplayer.audio;
 +
 +import androidx.annotation.NonNull;
@@ -76,6 +76,11 @@ index 0000000..674f8f5
 +            this.enabled = enabled;
 +            rebuildCoefficientsLocked();
 +        }
++    }
++
++    /** 当前是否启用均衡（供 offload 协调逻辑查询，无需持锁） */
++    public boolean isEnabled() {
++        return enabled;
 +    }
 +
 +    /**
@@ -294,7 +299,7 @@ index 0000000..459b1e8
 +    }
 +}
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
-index dba2794..df6b31c 100644
+index dba2794..3c8d57c 100644
 --- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
 @@ -30,6 +30,7 @@ import com.guichaguri.trackplayer.service.Utils;
@@ -305,22 +310,50 @@ index dba2794..df6b31c 100644
  
  import java.util.ArrayDeque;
  import java.util.ArrayList;
-@@ -424,6 +425,14 @@ public class MusicModule extends ReactContextBaseJavaModule implements ServiceCo
-         });
+@@ -416,10 +417,41 @@ public class MusicModule extends ReactContextBaseJavaModule implements ServiceCo
+         waitForConnection(() -> callback.resolve(binder.getPlayback().getVolume()));
      }
  
-+    @ReactMethod
-+    public void setPitch(final float pitch, final Promise callback) {
-+        waitForConnection(() -> {
-+            binder.getPlayback().setPitch(pitch);
++    /**
++     * 统一协调 audio offload：仅当「用户偏好开启 + 均衡器关闭 + 速率与音调均为默认」时才启用硬件 offload 直通。
++     * 均衡器、rate≠1、pitch≠1 都依赖软件 audio processor（均衡器链 / Sonic），与 offload 互斥，
++     * 必须禁用 offload，否则在走了 offload 路径的歌曲上设置非默认 PlaybackParameters 会使播放器进入不可恢复的错误状态。
++     */
++    private void updateAudioOffload(float rate, float pitch) {
++        ExoPlayback playback = binder.getPlayback();
++        if (playback == null) return;
++        boolean userPref = binder.getUserAudioOffloadPref();
++        EqualizerAudioProcessor eq = binder.getEqualizerProcessor();
++        boolean eqEnabled = eq != null && eq.isEnabled();
++        boolean defaultRatePitch = Math.abs(rate - 1.0f) < 1e-4f && Math.abs(pitch - 1.0f) < 1e-4f;
++        playback.setAudioOffloadEnabled(userPref && !eqEnabled && defaultRatePitch);
++    }
++
+     @ReactMethod
+     public void setRate(final float rate, final Promise callback) {
+         waitForConnection(() -> {
+-            binder.getPlayback().setRate(rate);
++            ExoPlayback playback = binder.getPlayback();
++            if (playback != null) {
++                playback.setRate(rate);
++                updateAudioOffload(rate, playback.getPitch());
++            }
 +            callback.resolve(null);
 +        });
 +    }
 +
-     @ReactMethod
-     public void getRate(final Promise callback) {
-         waitForConnection(() -> callback.resolve(binder.getPlayback().getRate()));
-@@ -521,4 +530,26 @@ public class MusicModule extends ReactContextBaseJavaModule implements ServiceCo
++    @ReactMethod
++    public void setPitch(final float pitch, final Promise callback) {
++        waitForConnection(() -> {
++            ExoPlayback playback = binder.getPlayback();
++            if (playback != null) {
++                playback.setPitch(pitch);
++                updateAudioOffload(playback.getRate(), pitch);
++            }
+             callback.resolve(null);
+         });
+     }
+@@ -521,4 +553,26 @@ public class MusicModule extends ReactContextBaseJavaModule implements ServiceCo
              waitForConnection(() -> callback.resolve(binder.getPlayback().getState()));
          }
      }
@@ -330,11 +363,11 @@ index dba2794..df6b31c 100644
 +        waitForConnection(() -> {
 +            EqualizerAudioProcessor eq = binder.getEqualizerProcessor();
 +            if (eq != null) eq.setEnabled(enabled);
-+            // 均衡器（软件 audio processor）与 audio offload（硬件直通）互斥：
-+            // 开均衡器→禁用 offload，让 processor 链生效；关均衡器→恢复用户的 offload 偏好
++            // offload 协调（与变速/变调共用同一逻辑）交由 updateAudioOffload 统一处理：
++            // 均衡器、rate≠1、pitch≠1 均需软件 audio processor，须禁用硬件 offload 直通
 +            ExoPlayback playback = binder.getPlayback();
 +            if (playback != null) {
-+                playback.setAudioOffloadEnabled(!enabled && binder.getUserAudioOffloadPref());
++                updateAudioOffload(playback.getRate(), playback.getPitch());
 +            }
 +        });
 +    }
@@ -348,7 +381,7 @@ index dba2794..df6b31c 100644
 +    }
  }
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
-index 9f0c19a..a561e58 100644
+index 9f0c19a..c761770 100644
 --- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
 @@ -10,6 +10,7 @@ import com.facebook.react.bridge.Promise;
@@ -375,7 +408,7 @@ index 9f0c19a..a561e58 100644
          ExoPlayback playback = manager.getPlayback();
  
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
-index 73f54b8..43af25c 100644
+index 73f54b8..b3d9012 100644
 --- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
 @@ -34,6 +34,8 @@ import com.guichaguri.trackplayer.service.metadata.MetadataManager;
@@ -431,7 +464,7 @@ index 73f54b8..43af25c 100644
          ExoPlayer player = new ExoPlayer.Builder(service, renderersFactory)
                  .setLoadControl(control)
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/player/ExoPlayback.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/player/ExoPlayback.java
-index ba1342b..8c56b88 100644
+index ba1342b..4ea9343 100644
 --- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/player/ExoPlayback.java
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/player/ExoPlayback.java
 @@ -19,6 +19,7 @@ import androidx.media3.common.MediaItem;
@@ -442,16 +475,47 @@ index ba1342b..8c56b88 100644
  import androidx.media3.common.Timeline.Window;
  import androidx.media3.common.Tracks;
  import androidx.media3.common.Metadata;
-@@ -243,6 +244,27 @@ public abstract class ExoPlayback<T extends Player> implements Player.Listener,
-         player.setPlaybackParameters(new PlaybackParameters(rate, player.getPlaybackParameters().pitch));
+@@ -240,7 +241,56 @@ public abstract class ExoPlayback<T extends Player> implements Player.Listener,
      }
  
+     public void setRate(float rate) {
+-        player.setPlaybackParameters(new PlaybackParameters(rate, player.getPlaybackParameters().pitch));
++        float pitch = player.getPlaybackParameters().pitch;
++        ensureSoftwareAudioPathIfNeeded(rate, pitch);
++        player.setPlaybackParameters(new PlaybackParameters(rate, pitch));
++    }
++
 +    public float getPitch() {
 +        return player.getPlaybackParameters().pitch;
 +    }
 +
 +    public void setPitch(float pitch) {
-+        player.setPlaybackParameters(new PlaybackParameters(player.getPlaybackParameters().speed, pitch));
++        float rate = player.getPlaybackParameters().speed;
++        ensureSoftwareAudioPathIfNeeded(rate, pitch);
++        player.setPlaybackParameters(new PlaybackParameters(rate, pitch));
++    }
++
++    private volatile boolean softwarePathForced = false;
++
++    private static boolean isDefaultPlaybackParams(float rate, float pitch) {
++        return Math.abs(rate - 1.0f) < 1e-4f && Math.abs(pitch - 1.0f) < 1e-4f;
++    }
++
++    /**
++     * 若新参数会使 PlaybackParameters 偏离默认值，先确保当前播放走软件 audio processor 链：
++     * 关闭 offload 并 seek 当前位置，强制 ExoPlayer 重新 prepare，把 renderer 从 offload 直通切回软件路径。
++     * 否则 offload 直通下设置非默认 PlaybackParameters（尤其 pitch≠1）会使播放器进入不可恢复的错误状态
++     * （offload→软件的切换不会在流内即时生效，必须 seek 触发 re-preparation）。
++     * softwarePathForced 标记避免对同一软件路径重复 seek（拖动滑块时只 seek 一次）。
++     */
++    private void ensureSoftwareAudioPathIfNeeded(float rate, float pitch) {
++        if (softwarePathForced || isDefaultPlaybackParams(rate, pitch)) return;
++        setAudioOffloadEnabled(false);
++        softwarePathForced = true;
++        int state = player.getPlaybackState();
++        if (state == Player.STATE_READY || state == Player.STATE_BUFFERING) {
++            player.seekTo(player.getCurrentPosition());
++        }
 +    }
 +
 +    /** 启用/禁用 audio offload。均衡器（软件 audio processor）与 offload（硬件直通）互斥。 */
@@ -465,13 +529,12 @@ index ba1342b..8c56b88 100644
 +                        .build())
 +                .build();
 +        player.setTrackSelectionParameters(params);
-+    }
-+
++        if (enabled) softwarePathForced = false; // 恢复 offload，允许下次非默认参数再次强制切软件
+     }
+ 
      public int getState() {
-         switch(player.getPlaybackState()) {
-             case Player.STATE_BUFFERING:
 diff --git a/node_modules/react-native-track-player/lib/trackPlayer.d.ts b/node_modules/react-native-track-player/lib/trackPlayer.d.ts
-index 18ed6e9..b8db712 100644
+index d749cd9..56b2ac4 100644
 --- a/node_modules/react-native-track-player/lib/trackPlayer.d.ts
 +++ b/node_modules/react-native-track-player/lib/trackPlayer.d.ts
 @@ -22,6 +22,9 @@ declare function stop(): Promise<void>;
@@ -495,7 +558,7 @@ index 18ed6e9..b8db712 100644
      getVolume: typeof getVolume;
      getRate: typeof getRate;
 diff --git a/node_modules/react-native-track-player/lib/trackPlayer.js b/node_modules/react-native-track-player/lib/trackPlayer.js
-index ecd3302..e0df4e3 100644
+index b3cd005..202ca28 100644
 --- a/node_modules/react-native-track-player/lib/trackPlayer.js
 +++ b/node_modules/react-native-track-player/lib/trackPlayer.js
 @@ -288,6 +288,33 @@ function setRate(rate) {
