@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { View } from 'react-native'
 import { useTheme } from '@/store/theme/hook'
 import Text from '@/components/common/Text'
@@ -20,6 +21,7 @@ export default () => {
   const theme = useTheme()
   const isEnabled = useSettingValue('player.isEqualizerEnabled')
   const bands = useSettingValue('player.equalizerBands')
+  const [resetKey, setResetKey] = useState(0)
   const t = useI18n()
 
   const handleToggle = (checked: boolean) => {
@@ -46,6 +48,8 @@ export default () => {
     zeroBands.forEach((_, i) => {
       void setEqualizerBandLevel(i, 0)
     })
+    // 切换 key 强制 Slider 重新挂载，确保 Android 端滑块视觉位置归零
+    setResetKey(key => key + 1)
   }
 
   return (
@@ -62,6 +66,7 @@ export default () => {
               <View key={index} style={styles.bandRow}>
                 <Text style={styles.bandLabel} color={theme['c-font-label']}>{label}</Text>
                 <Slider
+                  key={`${index}-${resetKey}`}
                   minimumValue={MIN_DB}
                   maximumValue={MAX_DB}
                   onValueChange={handleBandChange(index)}

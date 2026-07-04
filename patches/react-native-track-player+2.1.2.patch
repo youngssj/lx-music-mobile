@@ -1,14 +1,13 @@
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java
 new file mode 100644
-index 0000000..1b7dbd5
+index 0000000..674f8f5
 --- /dev/null
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/audio/EqualizerAudioProcessor.java
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,248 @@
 +package com.guichaguri.trackplayer.audio;
 +
 +import androidx.annotation.NonNull;
 +import androidx.media3.common.C;
-+import androidx.media3.common.AudioFormat;
 +import androidx.media3.common.audio.AudioProcessor;
 +import androidx.media3.common.audio.BaseAudioProcessor;
 +import androidx.media3.common.util.UnstableApi;
@@ -153,7 +152,7 @@ index 0000000..1b7dbd5
 +
 +    @NonNull
 +    @Override
-+    protected AudioFormat onConfigure(AudioFormat in) throws AudioProcessor.UnhandledAudioFormatException {
++    protected AudioProcessor.AudioFormat onConfigure(AudioProcessor.AudioFormat in) throws AudioProcessor.UnhandledAudioFormatException {
 +        if (in.encoding != C.ENCODING_PCM_16BIT && in.encoding != C.ENCODING_PCM_FLOAT) {
 +            throw new AudioProcessor.UnhandledAudioFormatException(in);
 +        }
@@ -295,7 +294,7 @@ index 0000000..459b1e8
 +    }
 +}
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
-index dba2794..f752594 100644
+index dba2794..df6b31c 100644
 --- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/module/MusicModule.java
 @@ -30,6 +30,7 @@ import com.guichaguri.trackplayer.service.Utils;
@@ -306,7 +305,22 @@ index dba2794..f752594 100644
  
  import java.util.ArrayDeque;
  import java.util.ArrayList;
-@@ -521,4 +522,20 @@ public class MusicModule extends ReactContextBaseJavaModule implements ServiceCo
+@@ -424,6 +425,14 @@ public class MusicModule extends ReactContextBaseJavaModule implements ServiceCo
+         });
+     }
+ 
++    @ReactMethod
++    public void setPitch(final float pitch, final Promise callback) {
++        waitForConnection(() -> {
++            binder.getPlayback().setPitch(pitch);
++            callback.resolve(null);
++        });
++    }
++
+     @ReactMethod
+     public void getRate(final Promise callback) {
+         waitForConnection(() -> callback.resolve(binder.getPlayback().getRate()));
+@@ -521,4 +530,26 @@ public class MusicModule extends ReactContextBaseJavaModule implements ServiceCo
              waitForConnection(() -> callback.resolve(binder.getPlayback().getState()));
          }
      }
@@ -316,6 +330,12 @@ index dba2794..f752594 100644
 +        waitForConnection(() -> {
 +            EqualizerAudioProcessor eq = binder.getEqualizerProcessor();
 +            if (eq != null) eq.setEnabled(enabled);
++            // 均衡器（软件 audio processor）与 audio offload（硬件直通）互斥：
++            // 开均衡器→禁用 offload，让 processor 链生效；关均衡器→恢复用户的 offload 偏好
++            ExoPlayback playback = binder.getPlayback();
++            if (playback != null) {
++                playback.setAudioOffloadEnabled(!enabled && binder.getUserAudioOffloadPref());
++            }
 +        });
 +    }
 +
@@ -328,7 +348,7 @@ index dba2794..f752594 100644
 +    }
  }
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
-index 9f0c19a..d1a11a8 100644
+index 9f0c19a..a561e58 100644
 --- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicBinder.java
 @@ -10,6 +10,7 @@ import com.facebook.react.bridge.Promise;
@@ -339,7 +359,7 @@ index 9f0c19a..d1a11a8 100644
  
  /**
   * @author Guichaguri
-@@ -29,6 +30,10 @@ public class MusicBinder extends Binder {
+@@ -29,6 +30,14 @@ public class MusicBinder extends Binder {
          service.handler.post(r);
      }
  
@@ -347,11 +367,15 @@ index 9f0c19a..d1a11a8 100644
 +        return manager == null ? null : manager.equalizerProcessor;
 +    }
 +
++    public boolean getUserAudioOffloadPref() {
++        return manager != null && manager.getUserAudioOffloadPref();
++    }
++
      public ExoPlayback getPlayback() {
          ExoPlayback playback = manager.getPlayback();
  
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
-index 73f54b8..baf8745 100644
+index 73f54b8..43af25c 100644
 --- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/MusicManager.java
 @@ -34,6 +34,8 @@ import com.guichaguri.trackplayer.service.metadata.MetadataManager;
@@ -363,17 +387,39 @@ index 73f54b8..baf8745 100644
  
  /**
   * @author Guichaguri
-@@ -49,6 +51,9 @@ public class MusicManager {
+@@ -49,6 +51,12 @@ public class MusicManager {
      private final MetadataManager metadata;
      private ExoPlayback playback;
  
 +    /** 自建均衡器处理器（createLocalPlayback 时创建） */
 +    public volatile EqualizerAudioProcessor equalizerProcessor;
 +
++    /** 用户在 RN 设置里配置的 audio offload 偏好（均衡器关闭时恢复用） */
++    private volatile boolean userAudioOffloadPref = true;
++
      // @RequiresApi(26)
      // private AudioFocusRequest focus = null;
      // private boolean hasAudioFocus = false;
-@@ -136,7 +141,9 @@ public class MusicManager {
+@@ -87,6 +95,10 @@ public class MusicManager {
+         return playback;
+     }
+ 
++    public boolean getUserAudioOffloadPref() {
++        return userAudioOffloadPref;
++    }
++
+     public boolean shouldStopWithApp() {
+         return stopWithApp;
+     }
+@@ -124,6 +136,7 @@ public class MusicManager {
+         boolean autoUpdateMetadata = options.getBoolean("autoUpdateMetadata", true);
+         boolean shouldHandleAudioFocus = options.getBoolean("handleAudioFocus", true);
+         boolean shouldEnableAudioOffload = options.getBoolean("audioOffload", true);
++        this.userAudioOffloadPref = shouldEnableAudioOffload;
+         int minBuffer = (int)Utils.toMillis(options.getDouble("minBuffer", Utils.toSeconds(DEFAULT_MIN_BUFFER_MS)));
+         int maxBuffer = (int)Utils.toMillis(options.getDouble("maxBuffer", Utils.toSeconds(DEFAULT_MAX_BUFFER_MS)));
+         int playBuffer = (int)Utils.toMillis(options.getDouble("playBuffer", Utils.toSeconds(DEFAULT_BUFFER_FOR_PLAYBACK_MS)));
+@@ -136,7 +149,9 @@ public class MusicManager {
                  .setBackBuffer(backBuffer, false)
                  .build();
  
@@ -384,36 +430,87 @@ index 73f54b8..baf8745 100644
  
          ExoPlayer player = new ExoPlayer.Builder(service, renderersFactory)
                  .setLoadControl(control)
+diff --git a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/player/ExoPlayback.java b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/player/ExoPlayback.java
+index ba1342b..8c56b88 100644
+--- a/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/player/ExoPlayback.java
++++ b/node_modules/react-native-track-player/android/src/main/java/com/guichaguri/trackplayer/service/player/ExoPlayback.java
+@@ -19,6 +19,7 @@ import androidx.media3.common.MediaItem;
+ import androidx.media3.common.PlaybackException;
+ import androidx.media3.common.PlaybackParameters;
+ import androidx.media3.common.Player;
++import androidx.media3.common.TrackSelectionParameters;
+ import androidx.media3.common.Timeline.Window;
+ import androidx.media3.common.Tracks;
+ import androidx.media3.common.Metadata;
+@@ -243,6 +244,27 @@ public abstract class ExoPlayback<T extends Player> implements Player.Listener,
+         player.setPlaybackParameters(new PlaybackParameters(rate, player.getPlaybackParameters().pitch));
+     }
+ 
++    public float getPitch() {
++        return player.getPlaybackParameters().pitch;
++    }
++
++    public void setPitch(float pitch) {
++        player.setPlaybackParameters(new PlaybackParameters(player.getPlaybackParameters().speed, pitch));
++    }
++
++    /** 启用/禁用 audio offload。均衡器（软件 audio processor）与 offload（硬件直通）互斥。 */
++    public void setAudioOffloadEnabled(boolean enabled) {
++        TrackSelectionParameters params = player.getTrackSelectionParameters().buildUpon()
++                .setAudioOffloadPreferences(new TrackSelectionParameters.AudioOffloadPreferences.Builder()
++                        .setAudioOffloadMode(enabled
++                                ? TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED
++                                : TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_DISABLED)
++                        .setIsGaplessSupportRequired(true)
++                        .build())
++                .build();
++        player.setTrackSelectionParameters(params);
++    }
++
+     public int getState() {
+         switch(player.getPlaybackState()) {
+             case Player.STATE_BUFFERING:
 diff --git a/node_modules/react-native-track-player/lib/trackPlayer.d.ts b/node_modules/react-native-track-player/lib/trackPlayer.d.ts
-index d749cd9..018946d 100644
+index 18ed6e9..b8db712 100644
 --- a/node_modules/react-native-track-player/lib/trackPlayer.d.ts
 +++ b/node_modules/react-native-track-player/lib/trackPlayer.d.ts
-@@ -22,6 +22,8 @@ declare function stop(): Promise<void>;
+@@ -22,6 +22,9 @@ declare function stop(): Promise<void>;
  declare function seekTo(position: number): Promise<void>;
  declare function setVolume(level: number): Promise<void>;
  declare function setRate(rate: number): Promise<void>;
++declare function setPitch(pitch: number): Promise<void>;
 +declare function setEqualizerEnabled(enabled: boolean): Promise<void>;
 +declare function setEqualizerBandLevel(band: number, level: number): Promise<void>;
  declare function setRepeatMode(mode: RepeatMode): Promise<RepeatMode>;
  declare function getVolume(): Promise<number>;
  declare function getRate(): Promise<number>;
-@@ -59,6 +61,8 @@ declare const _default: {
+@@ -59,6 +62,9 @@ declare const _default: {
      seekTo: typeof seekTo;
      setVolume: typeof setVolume;
      setRate: typeof setRate;
++    setPitch: typeof setPitch;
 +    setEqualizerEnabled: typeof setEqualizerEnabled;
 +    setEqualizerBandLevel: typeof setEqualizerBandLevel;
      setRepeatMode: typeof setRepeatMode;
      getVolume: typeof getVolume;
      getRate: typeof getRate;
 diff --git a/node_modules/react-native-track-player/lib/trackPlayer.js b/node_modules/react-native-track-player/lib/trackPlayer.js
-index b3cd005..d72c06f 100644
+index ecd3302..e0df4e3 100644
 --- a/node_modules/react-native-track-player/lib/trackPlayer.js
 +++ b/node_modules/react-native-track-player/lib/trackPlayer.js
-@@ -288,6 +288,24 @@ function setRate(rate) {
+@@ -288,6 +288,33 @@ function setRate(rate) {
          });
      });
  }
++function setPitch(pitch) {
++    return __awaiter(this, void 0, void 0, function () {
++        return __generator(this, function (_a) {
++            if (!isSetupedPlayer)
++                return [2 /*return*/, Promise.resolve()];
++            return [2 /*return*/, TrackPlayer.setPitch(pitch)];
++        });
++    });
++}
 +function setEqualizerEnabled(enabled) {
 +    return __awaiter(this, void 0, void 0, function () {
 +        return __generator(this, function (_a) {
@@ -435,10 +532,11 @@ index b3cd005..d72c06f 100644
  function setRepeatMode(mode) {
      return __awaiter(this, void 0, void 0, function () {
          return __generator(this, function (_a) {
-@@ -450,6 +468,8 @@ exports.default = {
+@@ -450,6 +477,9 @@ exports.default = {
      seekTo: seekTo,
      setVolume: setVolume,
      setRate: setRate,
++    setPitch: setPitch,
 +    setEqualizerEnabled: setEqualizerEnabled,
 +    setEqualizerBandLevel: setEqualizerBandLevel,
      setRepeatMode: setRepeatMode,
