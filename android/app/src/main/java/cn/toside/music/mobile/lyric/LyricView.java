@@ -2,6 +2,7 @@ package cn.toside.music.mobile.lyric;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
@@ -48,7 +49,11 @@ public class LyricView extends Activity implements View.OnTouchListener {
   private float widthPercentage = 1f;
 
   private float preY = 0;
-  // private static boolean isVibrated = false;
+
+  // 点击检测：记录按下时的坐标和时间，用于区分点击和拖动
+  private float downX;
+  private float downY;
+  private long downTime;
 
   private boolean isLock = false;
   private boolean isSingleLine = false;
@@ -429,6 +434,10 @@ public class LyricView extends Activity implements View.OnTouchListener {
         lastY = event.getRawY();
 
         preY = lastY;
+        // 记录按下时的坐标和时间，用于点击检测
+        downX = lastX;
+        downY = lastY;
+        downTime = System.currentTimeMillis();
         break;
       case MotionEvent.ACTION_MOVE:
         // 获取移动时的X，Y坐标
@@ -458,21 +467,20 @@ public class LyricView extends Activity implements View.OnTouchListener {
         lastY = nowY;
         break;
       case MotionEvent.ACTION_UP:
-        // float dy = nowY - preY;
-        // Log.d("Lyric","dy: " + dy);
-        // if (isVibrated){
-        //   if (dy > 10){
-        //     //down
-        //     actions(AppHolder.actions[3]);
-        //   }else if (dy<-10){
-        //     //up
-        //     actions(AppHolder.actions[4]);
-        //   }else {
-        //     //longClick
-        //     actions(AppHolder.actions[2]);
-        //   }
-        //   isVibrated =false;
-        // }
+        // 检测是否为点击（移动距离小且时间短）
+        float dx = event.getRawX() - downX;
+        float dy = event.getRawY() - downY;
+        float distance = (float) Math.sqrt(dx * dx + dy * dy);
+        long duration = System.currentTimeMillis() - downTime;
+        if (distance < 20 && duration < 500) {
+          // 点击：启动应用主界面
+          Intent launchIntent = reactContext.getPackageManager().getLaunchIntentForPackage(reactContext.getPackageName());
+          if (launchIntent != null) {
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            reactContext.startActivity(launchIntent);
+          }
+        }
+
         //根据移动的位置来判断
         // dy = 0;
         tranY = 0;
