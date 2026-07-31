@@ -6,10 +6,18 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
+import android.graphics.Typeface;
 import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.text.Layout;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.TextPaint;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.RelativeSizeSpan;
+import android.text.style.StyleSpan;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Display;
@@ -17,13 +25,17 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.OrientationEventListener;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
+import android.widget.TextView;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.WritableMap;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -73,6 +85,38 @@ public class LyricView extends Activity implements View.OnTouchListener {
   // private float lineHeight = 1;
   private String currentLyric = "LX Music ^-^";
   private ArrayList<String> currentExtendedLyrics = new ArrayList<>();
+  private int currentLineNum = -1;
+  private List currentAllLines = null;
+
+  // 当前行在 builder 中的字符区间。setText 触发的 layout 是异步的，且用单独 StaticLayout 估算的行位置
+  // 与 TextView 实际渲染可能不一致（上方行换行时偏差会累积），因此改为在 layout 完成后（OnPreDraw）用
+  // TextView 自己的 Layout 读取真实行位置来计算 scrollY。
+  private int pendingLineStart = 0;
+  private int pendingLineEnd = 0;
+  private final ViewTreeObserver.OnPreDrawListener scrollApplyListener = new ViewTreeObserver.OnPreDrawListener() {
+    @Override
+    public boolean onPreDraw() {
+      if (textView == null) return true;
+      View cv = textView.getCurrentView();
+      if (!(cv instanceof TextView)) return true;
+      Layout layout = ((TextView) cv).getLayout();
+      if (layout == null) return true; // 尚未 layout，等下一帧重试（listener 暂不移除）
+      textView.getViewTreeObserver().removeOnPreDrawListener(scrollApplyListener);
+      int lineStart = layout.getLineForOffset(pendingLineStart);
+      int lineEnd = layout.getLineForOffset(Math.max(0, pendingLineEnd - 1));
+      int center = (layout.getLineTop(lineStart) + layout.getLineBottom(lineEnd)) / 2;
+      int viewCenter = layoutParams.height / 2;
+      // 用 translationY 平移内容（而非 setScrollY）：translationY 是渲染期变换，不会被 TextView
+      // 的 layout/scroll 机制重置，对"上方换行导致当前行偏离中心"更可靠。
+      float translationY = viewCenter - center;
+      textView.setChildTranslationY(translationY);
+      Log.d("Lyric", "center=" + center + " viewH=" + layoutParams.height
+          + " viewCenter=" + viewCenter + " transY=" + translationY
+          + " lineStart=" + lineStart + " lineEnd=" + lineEnd
+          + " lineCount=" + layout.getLineCount());
+      return true;
+    }
+  };
 
   private int mLastRotation;
   private OrientationEventListener orientationEventListener = null;
@@ -144,10 +188,32 @@ public class LyricView extends Activity implements View.OnTouchListener {
 
   private void setLayoutParamsHeight() {
     if (textView == null) return;
-    int height = textView.getPaint().getFontMetricsInt(null) * maxLineNum;
+    int fontHeight = textView.getPaint().getFontMetricsInt(null);
+    int height;
+    if (isSingleLine) {
+      height = fontHeight;
+    } else {
+      height = fontHeight * maxLineNum;
+    }
     if (height > maxHeight - 100) height = maxHeight - 100;
     layoutParams.height = height;
     textView.setHeight(height);
+  }
+
+  /**
+   * setText 后请求把当前行滚动到窗口垂直中心。
+   * 不用单独的 StaticLayout 估算行位置：它与 TextView 实际渲染（断行策略 / 对齐 / padding）可能不一致，
+   * 上方行换行时偏差会累积、使当前行偏离中心。改为在下一个绘制帧（layout 已完成）从 TextView 自己的
+   * Layout 读取真实行位置计算 scrollY，与渲染完全一致；而 OnPreDraw 正好在异步 layout 之后、绘制之前，
+   * 也能覆盖 setText 引起的 mScrollY 清零。
+   */
+  private void requestScrollToCurrentLine() {
+    if (textView == null) return;
+    ViewTreeObserver vto = textView.getViewTreeObserver();
+    if (vto.isAlive()) {
+      vto.removeOnPreDrawListener(scrollApplyListener);
+      vto.addOnPreDrawListener(scrollApplyListener);
+    }
   }
 
   private void fixViewPosition() {
@@ -270,7 +336,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
     int textPositionY;
     switch (textX) {
       case "CENTER":
-        textPositionX = Gravity.CENTER;
+        textPositionX = Gravity.CENTER_HORIZONTAL;
         break;
       case "RIGHT":
         textPositionX = Gravity.END;
@@ -280,23 +346,26 @@ public class LyricView extends Activity implements View.OnTouchListener {
         textPositionX = Gravity.START;
         break;
     }
-    switch (textY) {
-      case "CENTER":
-        textPositionY = Gravity.CENTER;
-        break;
-      case "BOTTOM":
-        textPositionY = Gravity.BOTTOM;
-        break;
-      case "TOP":
-      default:
-        textPositionY = Gravity.TOP;
-        break;
+    if (isSingleLine) {
+      switch (textY) {
+        case "CENTER":
+          textPositionY = Gravity.CENTER_VERTICAL;
+          break;
+        case "BOTTOM":
+          textPositionY = Gravity.BOTTOM;
+          break;
+        case "TOP":
+        default:
+          textPositionY = Gravity.TOP;
+          break;
+      }
+    } else {
+      // 多行模式：使用 TOP 对齐，由 padding 精确控制当前行垂直居中
+      textPositionY = Gravity.TOP;
     }
     textView.setGravity(textPositionX | textPositionY);
 
-    if (!isSingleLine) {
-      textView.setMaxLines(maxLineNum);
-    }
+    // 多行模式不限制 maxLines，让文本自然换行，由窗口高度 + padding 裁剪
   }
   private void handleShowLyric() {
     if (windowManager == null) {
@@ -375,27 +444,108 @@ public class LyricView extends Activity implements View.OnTouchListener {
   }
 
   public void setLyric(String text, ArrayList<String> extendedLyrics) {
+    setLyric(text, extendedLyrics, currentAllLines, currentLineNum);
+  }
+
+  public void setLyric(String text, ArrayList<String> extendedLyrics, List allLines, int lineNum) {
     if (text.equals("") && text.equals(currentLyric) && extendedLyrics.size() == 0) return;
     currentLyric = text;
     currentExtendedLyrics = extendedLyrics;
+    currentAllLines = allLines;
+    currentLineNum = lineNum;
     if (textView == null) return;
-    if (extendedLyrics.size() > 0 && maxLineNum > 1 && !isSingleLine) {
-      int num = maxLineNum - 1;
-      StringBuilder textBuilder = new StringBuilder(text);
-      for (String lrc : extendedLyrics) {
-        textBuilder.append("\n").append(lrc);
-        if (--num < 1) break;
+
+    // 单行模式、无歌词行数据、或当前行无效时，回退到旧行为
+    if (isSingleLine || allLines == null || allLines.size() == 0 || lineNum < 0) {
+      if (extendedLyrics.size() > 0 && maxLineNum > 1 && !isSingleLine) {
+        int num = maxLineNum - 1;
+        StringBuilder textBuilder = new StringBuilder(text);
+        for (String lrc : extendedLyrics) {
+          textBuilder.append("\n").append(lrc);
+          if (--num < 1) break;
+        }
+        text = textBuilder.toString();
       }
-      text = textBuilder.toString();
+      textView.setText(text);
+      textView.setChildScrollY(0);
+      textView.setChildTranslationY(0f);
+      return;
     }
-    if (textView == null) return;
-    textView.setText(text);
+
+    // 多行模式：显示前后歌词，当前行居中、用颜色区分
+    TextPaint textPaint = textView.getPaint();
+    if (textPaint == null) {
+      textView.setText(text);
+      textView.setChildScrollY(0);
+      textView.setChildTranslationY(0f);
+      return;
+    }
+    int fontHeight = textPaint.getFontMetricsInt(null);
+    if (fontHeight <= 0) {
+      textView.setText(text);
+      textView.setChildScrollY(0);
+      textView.setChildTranslationY(0f);
+      return;
+    }
+
+    int windowHeight = layoutParams.height;
+    int totalLines = windowHeight / fontHeight;
+    if (totalLines < 1) totalLines = 1;
+    if (totalLines > maxLineNum) totalLines = maxLineNum;
+    // 强制奇数行，确保当前行能精确居中
+    if (totalLines > 1 && totalLines % 2 == 0) totalLines--;
+    int halfLines = (totalLines - 1) / 2;
+
+    int playedColorInt = parseColor(playedColor);
+    int unplayedColorInt = parseColor(unplayColor);
+
+    SpannableStringBuilder builder = new SpannableStringBuilder();
+    int currentLineStart = 0;
+    int currentLineEnd = 0;
+    // 始终渲染 totalLines 行，边界处用空行填充，保证当前行在文本块中心
+    for (int i = lineNum - halfLines; i <= lineNum + halfLines; i++) {
+      if (builder.length() > 0) builder.append("\n");
+
+      if (i < 0 || i >= allLines.size()) {
+        builder.append(" ");
+      } else {
+        HashMap line = (HashMap) allLines.get(i);
+        String lineText = (String) line.get("text");
+        if (lineText == null || lineText.isEmpty()) lineText = " ";
+
+        int lineStart = builder.length();
+        builder.append(lineText);
+        int lineEnd = builder.length();
+
+        if (i == lineNum) {
+          currentLineStart = lineStart;
+          currentLineEnd = lineEnd;
+          builder.setSpan(new ForegroundColorSpan(playedColorInt), lineStart, lineEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        } else {
+          builder.setSpan(new ForegroundColorSpan(unplayedColorInt), lineStart, lineEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+      }
+    }
+
+    if (builder.length() == 0) {
+      textView.setText(text);
+      textView.setChildScrollY(0);
+      textView.setChildTranslationY(0f);
+      return;
+    }
+
+    // 先 setText，再在 layout 完成后用 TextView 实际 Layout 计算并应用 scrollY
+    // （不用单独 StaticLayout 估算，避免与实际渲染不一致、上方行换行时偏差累积导致当前行偏移）
+    textView.setText(builder);
+    pendingLineStart = currentLineStart;
+    pendingLineEnd = currentLineEnd;
+    requestScrollToCurrentLine();
   }
 
   public void setMaxLineNum(int maxLineNum) {
     this.maxLineNum = maxLineNum;
     if (textView == null) return;
-    if (!isSingleLine) textView.setMaxLines(maxLineNum);
+    // 多行模式不限制 maxLines，由窗口高度裁剪
     setLayoutParamsHeight();
 
     int maxY = maxHeight - layoutParams.height;
@@ -405,6 +555,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
     if (layoutParams.y != y) layoutParams.y = y;
 
     windowManager.updateViewLayout(textView, layoutParams);
+    // 刷新歌词以更新前后行数
+    setLyric(currentLyric, currentExtendedLyrics);
   }
 
   public void setWidth(int width) {
@@ -527,7 +679,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
     if (textView == null) return;
     textView.setTextColor(parseColor(playedColor));
     textView.setShadowColor(parseColor(shadowColor));
-    // windowManager.updateViewLayout(textView, layoutParams);
+    // 刷新歌词以应用新颜色
+    setLyric(currentLyric, currentExtendedLyrics);
   }
 
   public void setLyricTextPosition(String textX, String textY) {
@@ -549,17 +702,22 @@ public class LyricView extends Activity implements View.OnTouchListener {
         textPositionX = Gravity.START;
         break;
     }
-    switch (textY) {
-      case "CENTER":
-        textPositionY = Gravity.CENTER_VERTICAL;
-        break;
-      case "BOTTOM":
-        textPositionY = Gravity.BOTTOM;
-        break;
-      case "TOP":
-      default:
-        textPositionY = Gravity.TOP;
-        break;
+    if (isSingleLine) {
+      switch (textY) {
+        case "CENTER":
+          textPositionY = Gravity.CENTER_VERTICAL;
+          break;
+        case "BOTTOM":
+          textPositionY = Gravity.BOTTOM;
+          break;
+        case "TOP":
+        default:
+          textPositionY = Gravity.TOP;
+          break;
+      }
+    } else {
+      // 多行模式：使用 TOP 对齐，由 padding 精确控制当前行垂直居中
+      textPositionY = Gravity.TOP;
     }
     textView.setGravity(textPositionX | textPositionY);
     windowManager.updateViewLayout(textView, layoutParams);
@@ -598,6 +756,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
     textView.setTextSize(size);
     setLayoutParamsHeight();
     windowManager.updateViewLayout(textView, layoutParams);
+    // 刷新歌词以更新前后行数
+    setLyric(currentLyric, currentExtendedLyrics);
   }
 
   public void destroyView() {

@@ -130,7 +130,7 @@ public class Lyric extends LyricPlayer {
 
   private void setCurrentLyric(String lyric, ArrayList<String> extendedLyrics) {
     if (isShowLyricView && !isScreenOff && lyricView != null) {
-      lyricView.setLyric(lyric, extendedLyrics);
+      lyricView.setLyric(lyric, extendedLyrics, lines, lastLine);
     }
     if (isSendLyricTextEvent) {
       WritableMap params = Arguments.createMap();
