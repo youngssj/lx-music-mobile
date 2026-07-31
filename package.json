@@ -1,7 +1,7 @@
 {
   "name": "lx-music-mobile",
   "version": "1.8.2",
-  "versionCode": 74,
+  "versionCode": 74003,
   "private": true,
   "scripts": {
     "postinstall": "patch-package",
