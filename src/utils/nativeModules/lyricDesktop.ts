@@ -54,6 +54,7 @@ export const showDesktopLyricView = async({
   playedColor,
   shadowColor,
   opacity,
+  backgroundOpacity,
   textSize,
   positionX,
   positionY,
@@ -69,6 +70,7 @@ export const showDesktopLyricView = async({
   playedColor: string
   shadowColor: string
   opacity: number
+  backgroundOpacity: number
   textSize: number
   positionX: number
   positionY: number
@@ -83,6 +85,7 @@ export const showDesktopLyricView = async({
     playedColor,
     shadowColor,
     alpha: getAlpha(opacity),
+    backgroundAlpha: getAlpha(backgroundOpacity),
     textSize: getTextSize(textSize),
     lyricViewX: positionX,
     lyricViewY: positionY,
@@ -171,6 +174,21 @@ export const setColor = async(unplayColor: string, playedColor: string, shadowCo
  */
 export const setAlpha = async(alpha: number): Promise<void> => {
   return LyricModule.setAlpha(getAlpha(alpha))
+}
+
+/**
+ * set background alpha
+ * @param alpha background alpha
+ */
+export const setBackgroundAlpha = async(alpha: number): Promise<void> => {
+  return LyricModule.setBackgroundAlpha(getAlpha(alpha))
+}
+
+/**
+ * set lyric view visible (不销毁窗口，仅切换 visibility)
+ */
+export const setLyricVisible = async(visible: boolean): Promise<void> => {
+  return LyricModule.setLyricVisible(visible)
 }
 
 /**

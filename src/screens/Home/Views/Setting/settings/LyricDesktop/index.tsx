@@ -9,6 +9,7 @@ import TextSize from './TextSize'
 import ViewWidth from './ViewWidth'
 import MaxLineNum from './MaxLineNum'
 import TextOpacity from './TextOpacity'
+import BackgroundOpacity from './BackgroundOpacity'
 import TextPositionX from './TextPositionX'
 import TextPositionY from './TextPositionY'
 import { useI18n } from '@/lang'
@@ -29,6 +30,7 @@ export default memo(() => {
       <ViewWidth />
       <MaxLineNum />
       <TextOpacity />
+      <BackgroundOpacity />
       <TextPositionX />
       <TextPositionY />
     </Section>

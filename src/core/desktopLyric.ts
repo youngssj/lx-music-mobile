@@ -11,6 +11,8 @@ import {
   toggleLock,
   setColor,
   setAlpha,
+  setBackgroundAlpha,
+  setLyricVisible,
   setTextSize,
   setShowToggleAnima,
   setSingleLine,
@@ -23,12 +25,19 @@ import {
   onPositionChange,
 } from '@/utils/nativeModules/lyricDesktop'
 import settingState from '@/store/setting/state'
+import { AppState, type AppStateStatus } from 'react-native'
 import playerState from '@/store/player/state'
 import { tranditionalize } from '@/utils/simplify-chinese-main'
 import { getPosition } from '@/plugins/player'
 export {
   onLyricLinePlay,
 } from '@/utils/nativeModules/lyricDesktop'
+
+// 桌面歌词仅在应用退到后台时显示，应用在前台(active)时隐藏，避免遮挡应用内界面
+let appStateSub: { remove: () => void } | null = null
+const handleLyricVisible = (state: AppStateStatus) => {
+  void setLyricVisible(state !== 'active')
+}
 
 export const showDesktopLyric = async() => {
   const setting = settingState.setting
@@ -40,6 +49,7 @@ export const showDesktopLyric = async() => {
     playedColor: setting['desktopLyric.style.lyricPlayedColor'],
     shadowColor: setting['desktopLyric.style.lyricShadowColor'],
     opacity: setting['desktopLyric.style.opacity'],
+    backgroundOpacity: setting['desktopLyric.style.backgroundOpacity'],
     textSize: setting['desktopLyric.style.fontSize'],
     width: setting['desktopLyric.width'],
     maxLineNum: setting['desktopLyric.maxLineNum'],
@@ -61,9 +71,15 @@ export const showDesktopLyric = async() => {
       void play(position * 1000)
     })
   }
+  if (!appStateSub) appStateSub = AppState.addEventListener('change', handleLyricVisible)
+  handleLyricVisible(AppState.currentState)
 }
 
 export const hideDesktopLyric = async() => {
+  if (appStateSub) {
+    appStateSub.remove()
+    appStateSub = null
+  }
   return hideDesktopLyricView()
 }
 
@@ -81,6 +97,7 @@ export const setDesktopLyricColor = async(unplayColor: string | null, playedColo
   )
 }
 export const setDesktopLyricAlpha = setAlpha
+export const setDesktopLyricBackgroundAlpha = setBackgroundAlpha
 export const setDesktopLyricTextSize = setTextSize
 export const setShowDesktopLyricToggleAnima = setShowToggleAnima
 export const setDesktopLyricSingleLine = setSingleLine

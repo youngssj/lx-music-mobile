@@ -57,6 +57,12 @@ public final class LyricSwitchView extends TextSwitcher {
         v.setIncludeFontPadding(false);
       }
     }
+    // 歌词文字与卡片边缘留出边距
+    float density = context.getResources().getDisplayMetrics().density;
+    int padH = (int) (16f * density);
+    // 垂直边距不放 TextView padding（会被 translationY 居中补偿抵消），
+    // 改由 LyricView 加到窗口高度上，让文字在更高窗口内居中、上下留白
+    for (TextView v : viewArray) v.setPadding(padH, 0, padH, 0);
     setAnima();
     this.addView(textView);
     this.addView(textView2);
@@ -177,16 +183,12 @@ public final class LyricSwitchView extends TextSwitcher {
   }
 
   public void setHeight(int i) {
-    // 不再给子 TextView 设固定高度：多行换行时内容会超出窗口高度，若子视图被固定高度裁剪，
-    // 超出部分（当前行的后续视觉行、后面的歌词行）就永远画不出来。改为让子 TextView 按内容
-    // 自适应高度（见 measureChildWithMargins），再由 translationY 平移 + 本视图裁剪显示窗口区间。
-    // LyricSwitchView 自身高度由 windowManager 的 layoutParams.height 决定，无需在此设置。
+    // 不给子 TextView 设固定高度：让其按内容自适应（见 measureChildWithMargins），
+    // 多行换行内容完整渲染，再由 translationY + 本视图裁剪显示窗口区间。
   }
 
   @Override
   protected void measureChildWithMargins(View child, int parentWidthMeasureSpec, int widthUsed, int parentHeightMeasureSpec, int heightUsed) {
-    // 用 UNSPECIFIED 高度测量子视图 → 子 TextView 高度 = 文本内容实际高度（不被窗口高度截断），
-    // 换行的内容得以完整渲染；配合 translationY + clipChildren 实现窗口内当前行居中且上下文可见。
     super.measureChildWithMargins(child, parentWidthMeasureSpec, widthUsed,
         MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), heightUsed);
   }

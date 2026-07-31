@@ -7,6 +7,7 @@ import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -20,6 +21,7 @@ import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -77,6 +79,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
   private String textX = "LEFT";
   private String textY = "TOP";
   private float alpha = 1f;
+  private float backgroundAlpha = 0.5f; // 歌词背景透明度（0~1）
   private float textSize = 18f;
   private int maxWidth = 0;
   private int maxHeight = 0;
@@ -106,14 +109,10 @@ public class LyricView extends Activity implements View.OnTouchListener {
       int lineEnd = layout.getLineForOffset(Math.max(0, pendingLineEnd - 1));
       int center = (layout.getLineTop(lineStart) + layout.getLineBottom(lineEnd)) / 2;
       int viewCenter = layoutParams.height / 2;
-      // 用 translationY 平移内容（而非 setScrollY）：translationY 是渲染期变换，不会被 TextView
-      // 的 layout/scroll 机制重置，对"上方换行导致当前行偏离中心"更可靠。
-      float translationY = viewCenter - center;
+      // 减去子 TextView 的 paddingTop：getLineTop 相对内容区(=TextView top + paddingTop)，
+      // 加 padding 后当前行实际位置下移了 paddingTop，需补回去才能垂直居中
+      float translationY = viewCenter - center - cv.getPaddingTop();
       textView.setChildTranslationY(translationY);
-      Log.d("Lyric", "center=" + center + " viewH=" + layoutParams.height
-          + " viewCenter=" + viewCenter + " transY=" + translationY
-          + " lineStart=" + lineStart + " lineEnd=" + lineEnd
-          + " lineCount=" + layout.getLineCount());
       return true;
     }
   };
@@ -124,10 +123,46 @@ public class LyricView extends Activity implements View.OnTouchListener {
   final Handler fixViewPositionHandler;
   final Runnable fixViewPositionRunnable = this::updateViewPosition;
 
+  // 毛玻璃模糊半径(px)。Android 12+ 用于 setBlurBehindRadius；设备不支持时由背景 drawable 兜底。
+  private int blurBehindRadiusPx = 0;
+
   LyricView(ReactApplicationContext reactContext, LyricEvent lyricEvent) {
     this.reactContext = reactContext;
     this.lyricEvent = lyricEvent;
     fixViewPositionHandler = new Handler();
+    blurBehindRadiusPx = (int) TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP, 20f, reactContext.getResources().getDisplayMetrics());
+  }
+
+  /**
+   * 毛玻璃（暂禁用）。
+   * 悬浮窗(WindowManager.LayoutParams)只有 setBlurBehindRadius、没有 setBackgroundBlurRadius
+   * (后者是 Window 的方法，悬浮窗没有 Window 对象)。而 setBlurBehindRadius 会把背景 drawable 仅
+   * 当作模糊轮廓、不绘制其 solid 填充——支持模糊的设备上呈现的是"模糊+透明"(无卡片底色)，
+   * 不支持模糊的设备/悬浮窗上则背景完全透明。两者都做不出"半透明卡片毛玻璃"。
+   * 因此先禁用模糊，用 rounded_corner 的半透明圆角背景作为磨砂卡片兜底。
+   */
+  private void applyBlurBehind() {
+    if (layoutParams == null) return;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      layoutParams.setBlurBehindRadius(isLock ? 0 : blurBehindRadiusPx);
+    }
+  }
+
+  /**
+   * 代码构造圆角 + 边框 + 半透明背景。
+   * XML ShapeDrawable（含 stroke）在悬浮窗上渲染异常（背景完全不显示），改用代码构造 GradientDrawable。
+   */
+  private GradientDrawable buildLyricBackground() {
+    float density = reactContext.getResources().getDisplayMetrics().density;
+    // 上深下浅渐变（两端靠近、过渡小），增加卡片质感
+    GradientDrawable bg = new GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM,
+        new int[]{ 0xD9000000, 0xB3000000 });
+    bg.setCornerRadius(10f * density);
+    bg.setStroke((int) (1f * density), 0x66FFFFFF);
+    bg.setAlpha((int) (backgroundAlpha * 255));
+    return bg;
   }
 
   private void listenOrientationEvent() {
@@ -288,6 +323,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
     textX = options.getString("textX", textX);
     textY = options.getString("textY", textY);
     alpha = (float) options.getDouble("alpha", alpha);
+    backgroundAlpha = (float) options.getDouble("backgroundAlpha", backgroundAlpha);
     textSize = (float) options.getDouble("textSize", textSize);
     widthPercentage = (float) options.getDouble("width", 100) / 100f;
     maxLineNum = (int) options.getDouble("maxLineNum", maxLineNum);
@@ -406,7 +442,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
         layoutParams.alpha = 0.8f;
       }
     } else {
-      textView.setBackgroundResource(R.drawable.rounded_corner);
+      // 临时排查：用纯色背景替代 ShapeDrawable，确认背景能否渲染
+      textView.setBackground(buildLyricBackground());
 
       if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
         layoutParams.alpha = 1.0f;
@@ -438,6 +475,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
 
     //设置透明
     layoutParams.format = PixelFormat.TRANSPARENT;
+
+    applyBlurBehind();
 
     //添加到window中
     windowManager.addView(textView, layoutParams);
@@ -657,6 +696,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
       layoutParams.alpha = 0.8f;
     }
     textView.setBackgroundColor(Color.TRANSPARENT);
+    applyBlurBehind();
     windowManager.updateViewLayout(textView, layoutParams);
   }
 
@@ -668,7 +708,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
     if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
       layoutParams.alpha = 1.0f;
     }
-    textView.setBackgroundResource(R.drawable.rounded_corner);
+    textView.setBackground(buildLyricBackground());
+    applyBlurBehind();
     windowManager.updateViewLayout(textView, layoutParams);
   }
 
@@ -727,6 +768,17 @@ public class LyricView extends Activity implements View.OnTouchListener {
     this.alpha = alpha;
     if (textView == null) return;
     textView.setAlpha(alpha);
+  }
+
+  public void setBackgroundOpacity(float alpha) {
+    this.backgroundAlpha = alpha;
+    if (textView == null || isLock) return;
+    textView.setBackground(buildLyricBackground());
+  }
+
+  public void setVisible(boolean visible) {
+    if (textView == null) return;
+    textView.setVisibility(visible ? View.VISIBLE : View.GONE);
   }
 
   public void setSingleLine(boolean isSingleLine) {

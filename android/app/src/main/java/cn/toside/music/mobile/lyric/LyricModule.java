@@ -153,6 +153,18 @@ public class LyricModule extends ReactContextBaseJavaModule {
   }
 
   @ReactMethod
+  public void setBackgroundAlpha(float alpha, Promise promise) {
+    if (lyric != null) lyric.setBackgroundOpacity(alpha);
+    promise.resolve(null);
+  }
+
+  @ReactMethod
+  public void setLyricVisible(boolean visible, Promise promise) {
+    if (lyric != null) lyric.setVisible(visible);
+    promise.resolve(null);
+  }
+
+  @ReactMethod
   public void setTextSize(float size, Promise promise) {
     if (lyric != null) lyric.setTextSize(size);
     promise.resolve(null);

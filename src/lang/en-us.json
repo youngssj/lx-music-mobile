@@ -318,6 +318,7 @@
   "setting_lyric_desktop_permission_tip": "To use this feature, you need to grant LX Music the permission to display hover windows in the system permission settings.\n\nDo you go to the relevant page to grant this permission?",
   "setting_lyric_desktop_single_line": "Do not wrap lyrics",
   "setting_lyric_desktop_text_opacity": "Lyric Font Transparency",
+  "setting_lyric_desktop_background_opacity": "Lyric Background Transparency",
   "setting_lyric_desktop_text_size": "Lyric Font Size",
   "setting_lyric_desktop_text_x": "Lyric Horizontal Alignment",
   "setting_lyric_desktop_text_x_center": "Center",

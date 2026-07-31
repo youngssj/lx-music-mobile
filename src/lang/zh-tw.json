@@ -315,6 +315,7 @@
   "setting_lyric_desktop_permission_tip": "顯示歌詞視窗功能需要在系統權限設定中授予 LX Music「重疊顯示於其他應用程式上方」權限才能使用，是否去相關頁面授予該權限？",
   "setting_lyric_desktop_single_line": "使用單行歌詞",
   "setting_lyric_desktop_text_opacity": "歌詞字體透明度",
+  "setting_lyric_desktop_background_opacity": "歌詞背景透明度",
   "setting_lyric_desktop_text_size": "歌詞字體大小",
   "setting_lyric_desktop_text_x": "歌詞水平對齊方式",
   "setting_lyric_desktop_text_x_center": "置中",

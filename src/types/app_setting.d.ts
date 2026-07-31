@@ -302,6 +302,11 @@ declare global {
       'desktopLyric.style.opacity': number
 
       /**
+       * 桌面歌词背景透明度
+       */
+      'desktopLyric.style.backgroundOpacity': number
+
+      /**
        * 桌面歌词未播放字体颜色
        */
       'desktopLyric.style.lyricUnplayColor': string

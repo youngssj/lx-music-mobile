@@ -275,6 +275,16 @@ public class Lyric extends LyricPlayer {
     lyricView.setAlpha(alpha);
   }
 
+  public void setBackgroundOpacity(float alpha) {
+    if (lyricView == null) return;
+    lyricView.setBackgroundOpacity(alpha);
+  }
+
+  public void setVisible(boolean visible) {
+    if (lyricView == null) return;
+    lyricView.setVisible(visible);
+  }
+
   public void setTextSize(float size) {
     if (lyricView == null) return;
     lyricView.setTextSize(size);

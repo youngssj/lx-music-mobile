@@ -318,6 +318,7 @@
   "setting_lyric_desktop_permission_tip": "桌面歌词功能需要在系统权限设置中授予 LX Music 显示悬浮窗口的权限才能使用，是否去相关界面授予该权限？",
   "setting_lyric_desktop_single_line": "使用单行歌词",
   "setting_lyric_desktop_text_opacity": "歌词字体透明度",
+  "setting_lyric_desktop_background_opacity": "歌词背景透明度",
   "setting_lyric_desktop_text_size": "歌词字体大小",
   "setting_lyric_desktop_text_x": "歌词水平对齐方式",
   "setting_lyric_desktop_text_x_center": "居中",
