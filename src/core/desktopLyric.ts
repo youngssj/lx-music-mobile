@@ -25,6 +25,9 @@ import {
   onPositionChange,
   onWidthChange,
   onMaxLineNumChange,
+  onControl,
+  onClose,
+  setPlaying,
 } from '@/utils/nativeModules/lyricDesktop'
 import settingState from '@/store/setting/state'
 import { AppState, type AppStateStatus } from 'react-native'
@@ -60,6 +63,8 @@ export const showDesktopLyric = async() => {
     textPositionX: setting['desktopLyric.textPosition.x'],
     textPositionY: setting['desktopLyric.textPosition.y'],
   })
+  // 推送当前播放状态，用于浮窗控制栏的播放/暂停按钮图标
+  void setPlaying(playerState.isPlay)
   let lrc = playerState.musicInfo.lrc ?? ''
   let tlrc = playerState.musicInfo.tlrc ?? ''
   let rlrc = playerState.musicInfo.rlrc ?? ''
@@ -114,6 +119,9 @@ export const openDesktopLyricOverlayPermissionActivity = openOverlayPermissionAc
 export const onDesktopLyricPositionChange = onPositionChange
 export const onDesktopLyricWidthChange = onWidthChange
 export const onDesktopLyricMaxLineNumChange = onMaxLineNumChange
+export const onDesktopLyricControl = onControl
+export const onDesktopLyricClose = onClose
+export const setDesktopLyricPlaying = setPlaying
 
 
 export const showRemoteLyric = async(isSend: boolean) => {

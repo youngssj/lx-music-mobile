@@ -271,6 +271,36 @@ export const onMaxLineNumChange = (handler: (maxLineNum: number) => void): () =>
   }
 }
 
+export const setPlaying = async(playing: boolean): Promise<void> => {
+  return LyricModule.setPlaying(playing)
+}
+
+export type DesktopLyricControlAction = 'prev' | 'playPause' | 'next'
+
+export const onControl = (handler: (action: DesktopLyricControlAction) => void): () => void => {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+  const eventEmitter = new NativeEventEmitter(LyricModule)
+  const eventListener = eventEmitter.addListener('control', event => {
+    handler((event as { action: DesktopLyricControlAction }).action)
+  })
+
+  return () => {
+    eventListener.remove()
+  }
+}
+
+export const onClose = (handler: () => void): () => void => {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+  const eventEmitter = new NativeEventEmitter(LyricModule)
+  const eventListener = eventEmitter.addListener('close', () => {
+    handler()
+  })
+
+  return () => {
+    eventListener.remove()
+  }
+}
+
 export const onLyricLinePlay = (handler: (lineInfo: { text: string, extendedLyrics: string[] }) => void): () => void => {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
   const eventEmitter = new NativeEventEmitter(LyricModule)

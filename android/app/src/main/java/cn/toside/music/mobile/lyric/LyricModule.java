@@ -183,6 +183,12 @@ public class LyricModule extends ReactContextBaseJavaModule {
   }
 
   @ReactMethod
+  public void setPlaying(boolean playing, Promise promise) {
+    if (lyric != null) lyric.setPlaying(playing);
+    promise.resolve(null);
+  }
+
+  @ReactMethod
   public void setShowToggleAnima(boolean showToggleAnima, Promise promise) {
     if (lyric != null) lyric.setShowToggleAnima(showToggleAnima);
     promise.resolve(null);

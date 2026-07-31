@@ -29,8 +29,13 @@ import android.view.MotionEvent;
 import android.view.OrientationEventListener;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.facebook.react.bridge.Arguments;
@@ -47,6 +52,17 @@ import cn.toside.music.mobile.R;
 
 public class LyricView extends Activity implements View.OnTouchListener {
   LyricSwitchView textView = null;
+  // 悬浮窗根容器：FrameLayout 包裹「歌词+控制栏」与右上角关闭按钮，作为 WindowManager 的目标视图
+  FrameLayout rootView = null;
+  LinearLayout contentLayout = null;
+  LinearLayout controlBar = null;
+  ImageButton prevButton = null;
+  ImageButton playPauseButton = null;
+  ImageButton nextButton = null;
+  ImageButton closeButton = null;
+  // 关闭二次确认弹窗（独立的 overlay 窗口）
+  ViewGroup confirmView = null;
+
   WindowManager windowManager = null;
   WindowManager.LayoutParams layoutParams = null;
   final private ReactApplicationContext reactContext;
@@ -95,13 +111,14 @@ public class LyricView extends Activity implements View.OnTouchListener {
   private int resizeStartWidth;
   private int resizeStartX;
   private int resizeRightEdge;
-  private int resizeStartHeight;
+  private int resizeStartHeight;          // 歌词区高度基准（不含控制栏）
   private int resizeStartY;
   private int resizeBottomEdge;
 
   private boolean isLock = false;
   private boolean isSingleLine = false;
   private boolean isShowToggleAnima = false;
+  private boolean isPlaying = false;      // 播放状态，用于切换播放/暂停按钮图标
   private String unplayColor = "rgba(255, 255, 255, 1)";
   private String playedColor = "rgba(7, 197, 86, 1)";
   private String shadowColor = "rgba(0, 0, 0, 0.15)";
@@ -121,6 +138,10 @@ public class LyricView extends Activity implements View.OnTouchListener {
   private int currentLineNum = -1;
   private List currentAllLines = null;
 
+  // 控制栏固定高度(px)，歌词区高度 = fontHeight * maxLineNum，窗口总高 = 歌词区 + 控制栏
+  private int controlBarHeightPx = 0;
+  private int lyricAreaHeightPx = 0;
+
   // 当前行在 builder 中的字符区间。setText 触发的 layout 是异步的，且用单独 StaticLayout 估算的行位置
   // 与 TextView 实际渲染可能不一致（上方行换行时偏差会累积），因此改为在 layout 完成后（OnPreDraw）用
   // TextView 自己的 Layout 读取真实行位置来计算 scrollY。
@@ -138,7 +159,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
       int lineStart = layout.getLineForOffset(pendingLineStart);
       int lineEnd = layout.getLineForOffset(Math.max(0, pendingLineEnd - 1));
       int center = (layout.getLineTop(lineStart) + layout.getLineBottom(lineEnd)) / 2;
-      int viewCenter = layoutParams.height / 2;
+      // 居中以「歌词区」高度为准（不含控制栏），否则当前行会被控制栏挤偏
+      int viewCenter = lyricAreaHeightPx / 2;
       // 减去子 TextView 的 paddingTop：getLineTop 相对内容区(=TextView top + paddingTop)，
       // 加 padding 后当前行实际位置下移了 paddingTop，需补回去才能垂直居中
       float translationY = viewCenter - center - cv.getPaddingTop();
@@ -162,11 +184,15 @@ public class LyricView extends Activity implements View.OnTouchListener {
     this.reactContext = reactContext;
     this.lyricEvent = lyricEvent;
     fixViewPositionHandler = new Handler();
-    blurBehindRadiusPx = (int) TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_DIP, 20f, reactContext.getResources().getDisplayMetrics());
+    blurBehindRadiusPx = dp(20);
+    controlBarHeightPx = dp(44);
     touchSlop = ViewConfiguration.get(reactContext).getScaledTouchSlop();
-    edgeSlop = (int) TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_DIP, 22f, reactContext.getResources().getDisplayMetrics());
+    edgeSlop = dp(22);
+  }
+
+  private int dp(int dps) {
+    return (int) TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP, dps, reactContext.getResources().getDisplayMetrics());
   }
 
   /**
@@ -280,9 +306,29 @@ public class LyricView extends Activity implements View.OnTouchListener {
     } else {
       height = fontHeight * maxLineNum;
     }
-    if (height > maxHeight - 100) height = maxHeight - 100;
-    layoutParams.height = height;
-    textView.setHeight(height);
+    // 歌词区高度上限：留出控制栏高度
+    int maxLyricH = maxHeight - 100 - controlBarHeightPx;
+    if (maxLyricH < fontHeight) maxLyricH = fontHeight;
+    if (height > maxLyricH) height = maxLyricH;
+    lyricAreaHeightPx = height;
+    // 窗口总高 = 歌词区 + 控制栏
+    layoutParams.height = lyricAreaHeightPx + controlBarHeightPx;
+    applyLyricAreaHeight();
+  }
+
+  /**
+   * 把歌词区高度写进 textView 的 LayoutParams（LyricSwitchView.setHeight 是 no-op，必须走 LayoutParams）。
+   */
+  private void applyLyricAreaHeight() {
+    if (textView == null) return;
+    ViewGroup.LayoutParams lp = textView.getLayoutParams();
+    if (lp == null) {
+      lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, lyricAreaHeightPx);
+      textView.setLayoutParams(lp);
+    } else {
+      lp.height = lyricAreaHeightPx;
+      textView.setLayoutParams(lp);
+    }
   }
 
   /**
@@ -331,7 +377,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
     // Log.d("Lyric", "prevViewPercentageY: " + prevViewPercentageY + "  layoutParams.x: " + layoutParams.x);
     // Log.d("Lyric", "layoutParams.y: " + layoutParams.y + "  layoutParams.width: " + layoutParams.width);
 
-    windowManager.updateViewLayout(textView, layoutParams);
+    windowManager.updateViewLayout(rootView, layoutParams);
   }
 
   public void sendPositionEvent(float x, float y) {
@@ -357,6 +403,18 @@ public class LyricView extends Activity implements View.OnTouchListener {
     WritableMap params = Arguments.createMap();
     params.putInt("maxLineNum", lineNum);
     lyricEvent.sendEvent(lyricEvent.SET_VIEW_MAX_LINE_NUM, params);
+  }
+
+  /** 控制按钮点击上报：action = prev / playPause / next */
+  private void sendControlEvent(String action) {
+    WritableMap params = Arguments.createMap();
+    params.putString("action", action);
+    lyricEvent.sendEvent(lyricEvent.CONTROL, params);
+  }
+
+  /** 关闭桌面歌词（已二次确认） */
+  private void sendCloseEvent() {
+    lyricEvent.sendEvent(lyricEvent.CLOSE, null);
   }
 
 //  public void permission(){
@@ -422,6 +480,143 @@ public class LyricView extends Activity implements View.OnTouchListener {
     return Color.parseColor("#000000");
   }
 
+  /** 构造一个控制按钮（透明背景、着色为已播放色、48dp 触控区、24dp 图标） */
+  private ImageButton buildControlButton(int res, View.OnClickListener listener) {
+    ImageButton btn = new ImageButton(reactContext);
+    btn.setImageResource(res);
+    btn.setColorFilter(parseColor(playedColor));
+    btn.setBackgroundColor(Color.TRANSPARENT);
+    int size = dp(48);
+    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
+    lp.gravity = Gravity.CENTER;
+    btn.setLayoutParams(lp);
+    int pad = dp(12);
+    btn.setPadding(pad, pad, pad, pad);
+    btn.setOnClickListener(listener);
+    return btn;
+  }
+
+  /** 构造控制栏：上一首 / 播放暂停 / 下一首 */
+  private LinearLayout buildControlBar() {
+    LinearLayout bar = new LinearLayout(reactContext);
+    bar.setOrientation(LinearLayout.HORIZONTAL);
+    bar.setGravity(Gravity.CENTER); // 水平 + 垂直都居中
+    bar.setLayoutParams(new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT, controlBarHeightPx));
+    prevButton = buildControlButton(R.drawable.ic_lyric_prev, v -> sendControlEvent("prev"));
+    playPauseButton = buildControlButton(
+        isPlaying ? R.drawable.ic_lyric_pause : R.drawable.ic_lyric_play,
+        v -> sendControlEvent("playPause"));
+    nextButton = buildControlButton(R.drawable.ic_lyric_next, v -> sendControlEvent("next"));
+    bar.addView(prevButton);
+    bar.addView(playPauseButton);
+    bar.addView(nextButton);
+    return bar;
+  }
+
+  /**
+   * 组装根容器：FrameLayout 内放「歌词区 + 控制栏」纵向布局，以及右上角关闭按钮。
+   * OnTouchListener 绑在 rootView 上：按钮自身消费点击不会触发拖动/打开 App。
+   */
+  private void buildRootView() {
+    contentLayout = new LinearLayout(reactContext);
+    contentLayout.setOrientation(LinearLayout.VERTICAL);
+    textView.setLayoutParams(new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+    contentLayout.addView(textView, 0);
+    controlBar = buildControlBar();
+    contentLayout.addView(controlBar);
+
+    closeButton = new ImageButton(reactContext);
+    closeButton.setImageResource(R.drawable.ic_lyric_close);
+    closeButton.setColorFilter(parseColor(playedColor));
+    closeButton.setBackgroundColor(Color.TRANSPARENT);
+    int cs = dp(32);
+    FrameLayout.LayoutParams closeLp = new FrameLayout.LayoutParams(cs, cs, Gravity.TOP | Gravity.END);
+    int m = dp(4);
+    closeLp.setMargins(m, m, m, m);
+    closeButton.setLayoutParams(closeLp);
+    int cp = dp(7);
+    closeButton.setPadding(cp, cp, cp, cp);
+    closeButton.setOnClickListener(v -> showCloseConfirm());
+
+    rootView = new FrameLayout(reactContext);
+    rootView.addView(contentLayout, new FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+    rootView.addView(closeButton);
+    // 监听 OnTouch 事件 为了实现"移动歌词 / 边缘缩放 / 点击打开"功能
+    rootView.setOnTouchListener(this);
+  }
+
+  /** 显示「确认关闭桌面歌词？」二次确认（独立的 overlay 窗口，应用在后台时也可见） */
+  private void showCloseConfirm() {
+    if (confirmView != null || windowManager == null) return;
+    float density = reactContext.getResources().getDisplayMetrics().density;
+
+    LinearLayout card = new LinearLayout(reactContext);
+    card.setOrientation(LinearLayout.VERTICAL);
+    card.setGravity(Gravity.CENTER_HORIZONTAL);
+    int pad = (int) (20f * density);
+    card.setPadding(pad, pad, pad, pad);
+    GradientDrawable bg = new GradientDrawable();
+    bg.setColor(0xD9000000);
+    bg.setCornerRadius(12f * density);
+    bg.setStroke((int) (1f * density), 0x66FFFFFF);
+    card.setBackground(bg);
+    card.setLayoutParams(new LinearLayout.LayoutParams((int) (260f * density), LinearLayout.LayoutParams.WRAP_CONTENT));
+
+    TextView title = new TextView(reactContext);
+    title.setText("确认关闭桌面歌词？");
+    title.setTextColor(Color.WHITE);
+    title.setTextSize(15f);
+    title.setGravity(Gravity.CENTER);
+    title.setPadding(0, 0, 0, (int) (16f * density));
+    card.addView(title);
+
+    LinearLayout btnRow = new LinearLayout(reactContext);
+    btnRow.setOrientation(LinearLayout.HORIZONTAL);
+    btnRow.setLayoutParams(new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+    Button cancel = new Button(reactContext);
+    cancel.setText("取消");
+    cancel.setTextColor(Color.WHITE);
+    cancel.setBackgroundColor(Color.TRANSPARENT);
+    Button ok = new Button(reactContext);
+    ok.setText("确认");
+    ok.setTextColor(parseColor(playedColor));
+    ok.setBackgroundColor(Color.TRANSPARENT);
+    cancel.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+    ok.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+    cancel.setOnClickListener(v -> removeCloseConfirm());
+    ok.setOnClickListener(v -> { removeCloseConfirm(); sendCloseEvent(); });
+    btnRow.addView(cancel);
+    btnRow.addView(ok);
+    card.addView(btnRow);
+
+    WindowManager.LayoutParams p = new WindowManager.LayoutParams();
+    p.type = Build.VERSION.SDK_INT < Build.VERSION_CODES.O ?
+      WindowManager.LayoutParams.TYPE_SYSTEM_ALERT :
+      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+    p.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+      WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
+      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+    p.format = PixelFormat.TRANSPARENT;
+    p.gravity = Gravity.CENTER;
+    p.width = WindowManager.LayoutParams.WRAP_CONTENT;
+    p.height = WindowManager.LayoutParams.WRAP_CONTENT;
+
+    confirmView = card;
+    windowManager.addView(confirmView, p);
+  }
+
+  private void removeCloseConfirm() {
+    if (confirmView == null) return;
+    if (windowManager != null) {
+      try { windowManager.removeView(confirmView); } catch (Exception ignored) {}
+    }
+    confirmView = null;
+  }
+
   private void createTextView() {
     textView = new LyricSwitchView(reactContext, isSingleLine, isShowToggleAnima);
     textView.setText("");
@@ -432,9 +627,6 @@ public class LyricView extends Activity implements View.OnTouchListener {
     textView.setAlpha(alpha);
     textView.setTextSize(textSize);
     // Log.d("Lyric", "alpha: " + alpha + " text size: " + textSize);
-
-    //监听 OnTouch 事件 为了实现"移动歌词"功能
-    textView.setOnTouchListener(this);
 
     int textPositionX;
     int textPositionY;
@@ -483,14 +675,15 @@ public class LyricView extends Activity implements View.OnTouchListener {
     }
 
     // 注意，悬浮窗只有一个，而当打开应用的时候才会产生悬浮窗，所以要判断悬浮窗是否已经存在，
-    if (textView != null) {
-      windowManager.removeView(textView);
+    if (rootView != null) {
+      try { windowManager.removeView(rootView); } catch (Exception ignored) {}
     }
 
     // 使用Application context
     // 创建UI控件，避免Activity销毁导致上下文出现问题,因为现在的悬浮窗是系统级别的，不依赖与Activity存在
     //创建自定义的TextView
     createTextView();
+    buildRootView();
 
     // layoutParams.type = WindowManager.LayoutParams.TYPE_SYSTEM_ALERT | WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY;
     // layoutParams.type = WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY;
@@ -503,15 +696,18 @@ public class LyricView extends Activity implements View.OnTouchListener {
     //  : WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
     layoutParams.flags = getLayoutParamsFlags();
     if (isLock) {
-      textView.setBackgroundColor(Color.TRANSPARENT);
+      rootView.setBackgroundColor(Color.TRANSPARENT);
+      if (controlBar != null) controlBar.setVisibility(View.GONE);
+      if (closeButton != null) closeButton.setVisibility(View.GONE);
 
       // 修复 Android 12 的穿透点击问题
       if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
         layoutParams.alpha = 0.8f;
       }
     } else {
-      // 临时排查：用纯色背景替代 ShapeDrawable，确认背景能否渲染
-      textView.setBackground(buildLyricBackground());
+      rootView.setBackground(buildLyricBackground());
+      if (controlBar != null) controlBar.setVisibility(View.VISIBLE);
+      if (closeButton != null) closeButton.setVisibility(View.VISIBLE);
 
       if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
         layoutParams.alpha = 1.0f;
@@ -527,10 +723,6 @@ public class LyricView extends Activity implements View.OnTouchListener {
     updateWH();
 
     //悬浮窗的宽高
-    // layoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT;
-    // layoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT;
-    // layoutParams.width= DisplayUtil.dp2px(mContext,55);
-    // layoutParams.height= DisplayUtil.dp2px(mContext,55);
     layoutParams.width = (int)(maxWidth * widthPercentage);
     textView.setWidth(layoutParams.width);
     setLayoutParamsHeight();
@@ -547,7 +739,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
     applyBlurBehind();
 
     //添加到window中
-    windowManager.addView(textView, layoutParams);
+    windowManager.addView(rootView, layoutParams);
   }
 
   public void setLyric(String text, ArrayList<String> extendedLyrics) {
@@ -595,7 +787,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
       return;
     }
 
-    int windowHeight = layoutParams.height;
+    // totalLines 以「歌词区」高度为准（不含控制栏）
+    int windowHeight = lyricAreaHeightPx;
     int totalLines = windowHeight / fontHeight;
     if (totalLines < 1) totalLines = 1;
     if (totalLines > maxLineNum) totalLines = maxLineNum;
@@ -661,7 +854,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
     else if (y > maxY) y = maxY;
     if (layoutParams.y != y) layoutParams.y = y;
 
-    windowManager.updateViewLayout(textView, layoutParams);
+    windowManager.updateViewLayout(rootView, layoutParams);
     // 刷新歌词以更新前后行数
     setLyric(currentLyric, currentExtendedLyrics);
   }
@@ -678,7 +871,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
     else if (x > maxX) x = maxX;
     if (layoutParams.x != x) layoutParams.x = x;
 
-    windowManager.updateViewLayout(textView, layoutParams);
+    windowManager.updateViewLayout(rootView, layoutParams);
   }
 
   /**
@@ -692,20 +885,22 @@ public class LyricView extends Activity implements View.OnTouchListener {
     resizeStartWidth = layoutParams.width;
     resizeStartX = layoutParams.x;
     resizeRightEdge = layoutParams.x + layoutParams.width;
-    resizeStartHeight = layoutParams.height;
+    // 高度基准用「歌词区」高度，避免把控制栏高度也算进缩放
+    resizeStartHeight = lyricAreaHeightPx;
     resizeStartY = layoutParams.y;
     resizeBottomEdge = layoutParams.y + layoutParams.height;
     // 视觉反馈 + 触感
-    if (textView != null) {
-      textView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-      if (!isLock) textView.setBackground(buildResizeBackground());
+    if (rootView != null) {
+      rootView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+      if (!isLock) rootView.setBackground(buildResizeBackground());
     }
   }
 
   /**
    * resize 模式下根据手势调整窗口大小：
    * - 左/右边缘只改宽度；四个角落同时改宽高。
-   * - 高度对齐到整行(fontHeight)的整数倍，换算成 maxLineNum(1~8)，保持与 fontHeight×maxLineNum 模型一致。
+   * - 高度对齐到整行(fontHeight)的整数倍，换算成 maxLineNum，保持与 fontHeight×maxLineNum 模型一致。
+   *   高度只影响「歌词区」，控制栏高度固定，窗口总高 = 歌词区 + 控制栏。
    */
   private void handleResize(MotionEvent event) {
     float deltaX = event.getRawX() - downX;
@@ -736,34 +931,32 @@ public class LyricView extends Activity implements View.OnTouchListener {
       newX = resizeStartX;
     }
 
-    // ---- 高度（仅角落：换算成 maxLineNum） ----
-    int newHeight = layoutParams.height;
+    // ---- 高度（仅角落：换算成 maxLineNum，只改歌词区） ----
+    int newLyricHeight = lyricAreaHeightPx;
     int newY = layoutParams.y;
     int newMaxLineNum = maxLineNum;
     if (resizeTop || resizeBottom) {
       int fontHeight = textView.getPaint().getFontMetricsInt(null);
-      if (fontHeight < 1) fontHeight = layoutParams.height / Math.max(1, maxLineNum);
+      if (fontHeight < 1) fontHeight = lyricAreaHeightPx / Math.max(1, maxLineNum);
       int minH = fontHeight;
-      int maxH = maxHeight - 100;
+      int maxH = maxHeight - 100 - controlBarHeightPx;
       if (resizeTop) {
-        newHeight = resizeStartHeight - (int) deltaY;
-        if (newHeight < minH) newHeight = minH;
-        if (newHeight > maxH) newHeight = maxH;
+        newLyricHeight = resizeStartHeight - (int) deltaY;
       } else {
-        newHeight = resizeStartHeight + (int) deltaY;
-        if (newHeight < minH) newHeight = minH;
-        if (newHeight > maxH) newHeight = maxH;
+        newLyricHeight = resizeStartHeight + (int) deltaY;
       }
+      if (newLyricHeight < minH) newLyricHeight = minH;
+      if (newLyricHeight > maxH) newLyricHeight = maxH;
       // 换算成行数并对齐到整行高度（上限由屏幕高度决定，不固定 8 行）
       int maxLines = Math.max(1, (int) Math.floor((float) maxH / (float) fontHeight));
-      newMaxLineNum = Math.max(1, Math.min(maxLines, Math.round((float) newHeight / (float) fontHeight)));
-      newHeight = fontHeight * newMaxLineNum;
-      // 顶部调整：保持底边固定；底部调整：保持顶边固定
-      newY = resizeTop ? (resizeBottomEdge - newHeight) : resizeStartY;
+      newMaxLineNum = Math.max(1, Math.min(maxLines, Math.round((float) newLyricHeight / (float) fontHeight)));
+      newLyricHeight = fontHeight * newMaxLineNum;
+      // 顶部调整保持底边固定（窗口总高 = 歌词区 + 控制栏）；底部调整保持顶边固定
+      newY = resizeTop ? (resizeBottomEdge - newLyricHeight - controlBarHeightPx) : resizeStartY;
     }
 
     if (newWidth == layoutParams.width && newX == layoutParams.x &&
-      newHeight == layoutParams.height && newY == layoutParams.y &&
+      newLyricHeight == lyricAreaHeightPx && newY == layoutParams.y &&
       newMaxLineNum == maxLineNum) return;
 
     // 应用宽度
@@ -775,14 +968,15 @@ public class LyricView extends Activity implements View.OnTouchListener {
     // 应用高度
     boolean lineNumChanged = newMaxLineNum != maxLineNum;
     maxLineNum = newMaxLineNum;
-    layoutParams.height = newHeight;
-    textView.setHeight(newHeight);
+    lyricAreaHeightPx = newLyricHeight;
+    layoutParams.height = lyricAreaHeightPx + controlBarHeightPx;
+    applyLyricAreaHeight();
     layoutParams.y = newY;
     int maxY = maxHeight - layoutParams.height;
     if (layoutParams.y < 0) layoutParams.y = 0;
     else if (layoutParams.y > maxY) layoutParams.y = maxY;
 
-    windowManager.updateViewLayout(textView, layoutParams);
+    windowManager.updateViewLayout(rootView, layoutParams);
     // 行数变化时刷新歌词，使多行模式渲染对应行数
     if (lineNumChanged) setLyric(currentLyric, currentExtendedLyrics);
   }
@@ -876,7 +1070,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
           layoutParams.x = x;
           layoutParams.y = y;
           //更新悬浮窗位置
-          windowManager.updateViewLayout(textView, layoutParams);
+          windowManager.updateViewLayout(rootView, layoutParams);
           //记录当前坐标作为下一次计算的上一次移动的位置坐标
           lastX = nowX;
           lastY = nowY;
@@ -924,8 +1118,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
         }
 
         // 退出 resize：恢复普通背景
-        if (wasResizing && textView != null && !isLock) {
-          textView.setBackground(buildLyricBackground());
+        if (wasResizing && rootView != null && !isLock) {
+          rootView.setBackground(buildLyricBackground());
         }
 
         touchMode = MODE_NONE;
@@ -938,28 +1132,34 @@ public class LyricView extends Activity implements View.OnTouchListener {
 
   public void lockView() {
     isLock = true;
-    if (windowManager == null || textView == null) return;
+    if (windowManager == null || rootView == null) return;
+    removeCloseConfirm();
     layoutParams.flags = getLayoutParamsFlags();
 
     if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
       layoutParams.alpha = 0.8f;
     }
-    textView.setBackgroundColor(Color.TRANSPARENT);
+    rootView.setBackgroundColor(Color.TRANSPARENT);
+    // 锁定后窗口 FLAG_NOT_TOUCHABLE，控制栏/关闭按钮无法点击，隐藏以免误导
+    if (controlBar != null) controlBar.setVisibility(View.GONE);
+    if (closeButton != null) closeButton.setVisibility(View.GONE);
     applyBlurBehind();
-    windowManager.updateViewLayout(textView, layoutParams);
+    windowManager.updateViewLayout(rootView, layoutParams);
   }
 
   public void unlockView() {
     isLock = false;
-    if (windowManager == null || textView == null) return;
+    if (windowManager == null || rootView == null) return;
     layoutParams.flags = getLayoutParamsFlags();
 
     if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
       layoutParams.alpha = 1.0f;
     }
-    textView.setBackground(buildLyricBackground());
+    rootView.setBackground(buildLyricBackground());
+    if (controlBar != null) controlBar.setVisibility(View.VISIBLE);
+    if (closeButton != null) closeButton.setVisibility(View.VISIBLE);
     applyBlurBehind();
-    windowManager.updateViewLayout(textView, layoutParams);
+    windowManager.updateViewLayout(rootView, layoutParams);
   }
 
   public void setColor(String unplayColor, String playedColor, String shadowColor) {
@@ -969,8 +1169,23 @@ public class LyricView extends Activity implements View.OnTouchListener {
     if (textView == null) return;
     textView.setTextColor(parseColor(playedColor));
     textView.setShadowColor(parseColor(shadowColor));
+    // 控制按钮 / 关闭按钮 同步着色为已播放色
+    int c = parseColor(playedColor);
+    if (prevButton != null) prevButton.setColorFilter(c);
+    if (playPauseButton != null) playPauseButton.setColorFilter(c);
+    if (nextButton != null) nextButton.setColorFilter(c);
+    if (closeButton != null) closeButton.setColorFilter(c);
     // 刷新歌词以应用新颜色
     setLyric(currentLyric, currentExtendedLyrics);
+  }
+
+  /** 切换播放/暂停按钮图标（由 JS 根据播放状态推送） */
+  public void setPlaying(boolean playing) {
+    isPlaying = playing;
+    if (playPauseButton != null) {
+      playPauseButton.setImageResource(playing ? R.drawable.ic_lyric_pause : R.drawable.ic_lyric_play);
+      playPauseButton.setColorFilter(parseColor(playedColor));
+    }
   }
 
   public void setLyricTextPosition(String textX, String textY) {
@@ -1010,7 +1225,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
       textPositionY = Gravity.TOP;
     }
     textView.setGravity(textPositionX | textPositionY);
-    windowManager.updateViewLayout(textView, layoutParams);
+    windowManager.updateViewLayout(rootView, layoutParams);
   }
 
   public void setAlpha(float alpha) {
@@ -1021,28 +1236,31 @@ public class LyricView extends Activity implements View.OnTouchListener {
 
   public void setBackgroundOpacity(float alpha) {
     this.backgroundAlpha = alpha;
-    if (textView == null || isLock) return;
-    textView.setBackground(buildLyricBackground());
+    if (rootView == null || isLock) return;
+    rootView.setBackground(buildLyricBackground());
   }
 
   public void setVisible(boolean visible) {
-    if (textView == null) return;
-    textView.setVisibility(visible ? View.VISIBLE : View.GONE);
+    if (rootView == null) return;
+    if (!visible) removeCloseConfirm();
+    rootView.setVisibility(visible ? View.VISIBLE : View.GONE);
   }
 
   public void setSingleLine(boolean isSingleLine) {
     this.isSingleLine = isSingleLine;
-    if (textView == null) return;
-    windowManager.removeView(textView);
+    if (textView == null || rootView == null) return;
+    // 仅重建内部 textView，保留 rootView/控制栏/关闭按钮
+    contentLayout.removeView(textView);
     createTextView();
     textView.setWidth(layoutParams.width);
-    textView.setHeight(layoutParams.height);
-    windowManager.addView(textView, layoutParams);
+    contentLayout.addView(textView, 0);
+    setLayoutParamsHeight();
 
     if (isLock) lockView();
     else unlockView();
 
     setLyric(currentLyric, currentExtendedLyrics);
+    windowManager.updateViewLayout(rootView, layoutParams);
   }
 
   public void setShowToggleAnima(boolean showToggleAnima) {
@@ -1056,15 +1274,23 @@ public class LyricView extends Activity implements View.OnTouchListener {
     if (windowManager == null || textView == null) return;
     textView.setTextSize(size);
     setLayoutParamsHeight();
-    windowManager.updateViewLayout(textView, layoutParams);
+    windowManager.updateViewLayout(rootView, layoutParams);
     // 刷新歌词以更新前后行数
     setLyric(currentLyric, currentExtendedLyrics);
   }
 
   public void destroyView() {
-    if (textView == null || windowManager == null) return;
-    windowManager.removeView(textView);
+    removeCloseConfirm();
+    if (rootView == null || windowManager == null) return;
+    try { windowManager.removeView(rootView); } catch (Exception ignored) {}
+    rootView = null;
     textView = null;
+    contentLayout = null;
+    controlBar = null;
+    closeButton = null;
+    prevButton = null;
+    playPauseButton = null;
+    nextButton = null;
     removeOrientationEvent();
   }
 
