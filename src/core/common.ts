@@ -40,6 +40,15 @@ export const updateSetting = (setting: Partial<LX.AppSetting>) => {
   throttleSaveSetting()
 }
 
+/**
+ * 立即把当前设置写入磁盘（绕过节流）。
+ * 桌面歌词的位置/尺寸是在应用后台时变更的，节流写依赖 setTimeout 会被系统推迟，
+ * 一旦进程被杀就会丢失最新值，因此这些变更需要即时持久化。
+ */
+export const saveSettingNow = () => {
+  void saveData(storageDataPrefix.setting, settingState.setting)
+}
+
 export const setLanguage = (locale: Parameters<typeof applyLanguage>[0]) => {
   updateSetting({ 'common.langId': locale })
   global.state_event.languageChanged(locale)

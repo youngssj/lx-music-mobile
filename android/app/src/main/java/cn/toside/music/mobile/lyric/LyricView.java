@@ -71,23 +71,33 @@ public class LyricView extends Activity implements View.OnTouchListener {
   private float downY;
   private long downTime;
 
-  // 边缘长按拖拽调整大小（resize）
+  // 边缘/角落长按拖拽调整大小（resize）
   private static final int MODE_NONE = 0;     // 未确定（可能在等长按）
   private static final int MODE_MOVE = 1;     // 拖动移动窗口
-  private static final int MODE_RESIZE = 2;   // 边缘长按后拖动调整大小
-  private static final int EDGE_LEFT = 1;
-  private static final int EDGE_RIGHT = 2;
-  private static final int LONG_PRESS_TIMEOUT = 300; // 边缘长按判定时长(ms)
+  private static final int MODE_RESIZE = 2;   // 长按边缘/角落后拖动调整大小
+  // resize 目标：边缘只改宽度，四个角落同时改宽高
+  private static final int RESIZE_NONE = 0;
+  private static final int RESIZE_EDGE_LEFT = 1;
+  private static final int RESIZE_EDGE_RIGHT = 2;
+  private static final int RESIZE_CORNER_TL = 3; // 左上
+  private static final int RESIZE_CORNER_TR = 4; // 右上
+  private static final int RESIZE_CORNER_BL = 5; // 左下
+  private static final int RESIZE_CORNER_BR = 6; // 右下
+  private static final int LONG_PRESS_TIMEOUT = 300; // 长按判定时长(ms)
   private int touchMode = MODE_NONE;
-  private int activeEdge = 0;          // 当前长按的边缘（EDGE_LEFT / EDGE_RIGHT）
-  private boolean longPressPending;    // 是否在等待边缘长按判定
-  private float downViewX;             // 按下时相对窗口的坐标（用于边缘判定）
-  private int touchSlop;               // 触摸 slop（区分点击/拖动）
-  private int edgeSlop;                // 边缘判定宽度(px)
+  private int activeResize = RESIZE_NONE; // 当前长按的调整目标
+  private boolean longPressPending;       // 是否在等待长按判定
+  private float downViewX;                // 按下时相对窗口的坐标（用于边缘/角落判定）
+  private float downViewY;
+  private int touchSlop;                  // 触摸 slop（区分点击/拖动）
+  private int edgeSlop;                   // 边缘判定宽度(px)
   // resize 起始基准（按下时快照，用相对 delta 计算以规避坐标系偏移）
   private int resizeStartWidth;
   private int resizeStartX;
   private int resizeRightEdge;
+  private int resizeStartHeight;
+  private int resizeStartY;
+  private int resizeBottomEdge;
 
   private boolean isLock = false;
   private boolean isSingleLine = false;
@@ -339,6 +349,14 @@ public class LyricView extends Activity implements View.OnTouchListener {
     WritableMap params = Arguments.createMap();
     params.putInt("width", percent);
     lyricEvent.sendEvent(lyricEvent.SET_VIEW_WIDTH, params);
+  }
+
+  public void sendMaxLineNumEvent() {
+    // 上报可见行数给 JS 持久化（最少 1 行，上限由屏幕高度决定）
+    int lineNum = Math.max(1, maxLineNum);
+    WritableMap params = Arguments.createMap();
+    params.putInt("maxLineNum", lineNum);
+    lyricEvent.sendEvent(lyricEvent.SET_VIEW_MAX_LINE_NUM, params);
   }
 
 //  public void permission(){
@@ -674,6 +692,9 @@ public class LyricView extends Activity implements View.OnTouchListener {
     resizeStartWidth = layoutParams.width;
     resizeStartX = layoutParams.x;
     resizeRightEdge = layoutParams.x + layoutParams.width;
+    resizeStartHeight = layoutParams.height;
+    resizeStartY = layoutParams.y;
+    resizeBottomEdge = layoutParams.y + layoutParams.height;
     // 视觉反馈 + 触感
     if (textView != null) {
       textView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
@@ -682,36 +703,88 @@ public class LyricView extends Activity implements View.OnTouchListener {
   }
 
   /**
-   * resize 模式下根据手势调整窗口宽度：按住右边缘往右拉变宽、按住左边缘往左拉变宽。
+   * resize 模式下根据手势调整窗口大小：
+   * - 左/右边缘只改宽度；四个角落同时改宽高。
+   * - 高度对齐到整行(fontHeight)的整数倍，换算成 maxLineNum(1~8)，保持与 fontHeight×maxLineNum 模型一致。
    */
   private void handleResize(MotionEvent event) {
-    float delta = event.getRawX() - downX;
-    int minW = (int) (maxWidth * 0.10f); // 与设置项最小值(10%)一致
-    int newWidth;
-    int newX;
+    float deltaX = event.getRawX() - downX;
+    float deltaY = event.getRawY() - downY;
 
-    if (activeEdge == EDGE_RIGHT) {
-      // 右边缘随手势移动，左边缘固定
-      newWidth = resizeStartWidth + (int) delta;
-      if (newWidth < minW) newWidth = minW;
-      int limit = maxWidth - resizeStartX; // 右边缘不超出屏幕
-      if (newWidth > limit) newWidth = limit;
-      newX = resizeStartX;
-    } else { // EDGE_LEFT：左边缘随手势移动，右边缘固定
-      newWidth = resizeStartWidth - (int) delta;
+    boolean resizeLeft = activeResize == RESIZE_EDGE_LEFT ||
+      activeResize == RESIZE_CORNER_TL || activeResize == RESIZE_CORNER_BL;
+    boolean resizeRight = activeResize == RESIZE_EDGE_RIGHT ||
+      activeResize == RESIZE_CORNER_TR || activeResize == RESIZE_CORNER_BR;
+    boolean resizeTop = activeResize == RESIZE_CORNER_TL || activeResize == RESIZE_CORNER_TR;
+    boolean resizeBottom = activeResize == RESIZE_CORNER_BL || activeResize == RESIZE_CORNER_BR;
+
+    // ---- 宽度 ----
+    int minW = (int) (maxWidth * 0.10f); // 与设置项最小值(10%)一致
+    int newWidth = layoutParams.width;
+    int newX = layoutParams.x;
+    if (resizeLeft) {
+      newWidth = resizeStartWidth - (int) deltaX;
       if (newWidth < minW) newWidth = minW;
       if (newWidth > maxWidth) newWidth = maxWidth;
       newX = resizeRightEdge - newWidth;
       if (newX < 0) { newX = 0; newWidth = resizeRightEdge; }
+    } else if (resizeRight) {
+      newWidth = resizeStartWidth + (int) deltaX;
+      if (newWidth < minW) newWidth = minW;
+      int limit = maxWidth - resizeStartX; // 右边缘不超出屏幕
+      if (newWidth > limit) newWidth = limit;
+      newX = resizeStartX;
     }
 
-    if (newWidth == layoutParams.width && newX == layoutParams.x) return;
+    // ---- 高度（仅角落：换算成 maxLineNum） ----
+    int newHeight = layoutParams.height;
+    int newY = layoutParams.y;
+    int newMaxLineNum = maxLineNum;
+    if (resizeTop || resizeBottom) {
+      int fontHeight = textView.getPaint().getFontMetricsInt(null);
+      if (fontHeight < 1) fontHeight = layoutParams.height / Math.max(1, maxLineNum);
+      int minH = fontHeight;
+      int maxH = maxHeight - 100;
+      if (resizeTop) {
+        newHeight = resizeStartHeight - (int) deltaY;
+        if (newHeight < minH) newHeight = minH;
+        if (newHeight > maxH) newHeight = maxH;
+      } else {
+        newHeight = resizeStartHeight + (int) deltaY;
+        if (newHeight < minH) newHeight = minH;
+        if (newHeight > maxH) newHeight = maxH;
+      }
+      // 换算成行数并对齐到整行高度（上限由屏幕高度决定，不固定 8 行）
+      int maxLines = Math.max(1, (int) Math.floor((float) maxH / (float) fontHeight));
+      newMaxLineNum = Math.max(1, Math.min(maxLines, Math.round((float) newHeight / (float) fontHeight)));
+      newHeight = fontHeight * newMaxLineNum;
+      // 顶部调整：保持底边固定；底部调整：保持顶边固定
+      newY = resizeTop ? (resizeBottomEdge - newHeight) : resizeStartY;
+    }
 
+    if (newWidth == layoutParams.width && newX == layoutParams.x &&
+      newHeight == layoutParams.height && newY == layoutParams.y &&
+      newMaxLineNum == maxLineNum) return;
+
+    // 应用宽度
     widthPercentage = (float) newWidth / (float) maxWidth;
     layoutParams.width = newWidth;
     layoutParams.x = newX;
     textView.setWidth(newWidth);
+
+    // 应用高度
+    boolean lineNumChanged = newMaxLineNum != maxLineNum;
+    maxLineNum = newMaxLineNum;
+    layoutParams.height = newHeight;
+    textView.setHeight(newHeight);
+    layoutParams.y = newY;
+    int maxY = maxHeight - layoutParams.height;
+    if (layoutParams.y < 0) layoutParams.y = 0;
+    else if (layoutParams.y > maxY) layoutParams.y = maxY;
+
     windowManager.updateViewLayout(textView, layoutParams);
+    // 行数变化时刷新歌词，使多行模式渲染对应行数
+    if (lineNumChanged) setLyric(currentLyric, currentExtendedLyrics);
   }
 
   @Override
@@ -731,16 +804,31 @@ public class LyricView extends Activity implements View.OnTouchListener {
         downY = lastY;
         downTime = System.currentTimeMillis();
         downViewX = event.getX();
+        downViewY = event.getY();
         touchMode = MODE_NONE;
         longPressPending = false;
 
-        // 锁定状态下窗口不接收触摸(FLAG_NOT_TOUCHABLE)，保险起见仍跳过边缘判定
+        // 锁定状态下窗口不接收触摸(FLAG_NOT_TOUCHABLE)，保险起见仍跳过边缘/角落判定
         if (!isLock) {
           int vw = v.getWidth();
-          boolean onLeft = downViewX <= edgeSlop;
-          boolean onRight = downViewX >= vw - edgeSlop;
-          if (onLeft || onRight) {
-            activeEdge = onRight ? EDGE_RIGHT : EDGE_LEFT;
+          int vh = v.getHeight();
+          // 窗口很扁/很窄时，按"是否过半"判定上下/左右，避免整面都落进同一个边缘区
+          // 导致对侧角抓不到（拉到最扁后无法再调高度）。
+          int zoneX = Math.min(edgeSlop, vw / 2);
+          int zoneY = Math.min(edgeSlop, vh / 2);
+          boolean onLeft = downViewX <= zoneX;
+          boolean onRight = downViewX >= vw - zoneX;
+          boolean onTop = downViewY <= zoneY;
+          boolean onBottom = downViewY >= vh - zoneY;
+          int target = RESIZE_NONE;
+          if (onTop && onLeft) target = RESIZE_CORNER_TL;
+          else if (onTop && onRight) target = RESIZE_CORNER_TR;
+          else if (onBottom && onLeft) target = RESIZE_CORNER_BL;
+          else if (onBottom && onRight) target = RESIZE_CORNER_BR;
+          else if (onLeft) target = RESIZE_EDGE_LEFT;
+          else if (onRight) target = RESIZE_EDGE_RIGHT;
+          if (target != RESIZE_NONE) {
+            activeResize = target;
             longPressPending = true;
             fixViewPositionHandler.postDelayed(edgeLongPressRunnable, LONG_PRESS_TIMEOUT);
           }
@@ -820,7 +908,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
             }
           }
         } else {
-          // 移动 / 左边缘缩放都可能改变窗口位置，统一上报位置
+          // 移动 / 缩放都可能改变窗口位置，统一上报位置
           float percentageX = (float)layoutParams.x / (float) maxWidth * 100f;
           float percentageY = (float)layoutParams.y / (float) maxHeight * 100f;
           if (percentageX != prevViewPercentageX || percentageY != prevViewPercentageY) {
@@ -828,8 +916,11 @@ public class LyricView extends Activity implements View.OnTouchListener {
             prevViewPercentageY = percentageY / 100f;
             sendPositionEvent(percentageX, percentageY);
           }
-          // resize 结束：上报宽度给 JS 持久化
-          if (wasResizing) sendWidthEvent();
+          // resize 结束：上报宽度 / 行数给 JS 持久化
+          if (wasResizing) {
+            sendWidthEvent();
+            sendMaxLineNumEvent();
+          }
         }
 
         // 退出 resize：恢复普通背景
@@ -838,7 +929,7 @@ public class LyricView extends Activity implements View.OnTouchListener {
         }
 
         touchMode = MODE_NONE;
-        activeEdge = 0;
+        activeResize = RESIZE_NONE;
         break;
       }
     }

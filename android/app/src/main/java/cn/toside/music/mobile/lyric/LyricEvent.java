@@ -9,6 +9,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 public class LyricEvent {
   final String SET_VIEW_POSITION = "set-position";
   final String SET_VIEW_WIDTH = "set-width";
+  final String SET_VIEW_MAX_LINE_NUM = "set-max-line-num";
   final String LYRIC_Line_PLAY = "lyric-line-play";
 
   private final ReactApplicationContext reactContext;

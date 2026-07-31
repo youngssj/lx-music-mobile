@@ -259,6 +259,18 @@ export const onWidthChange = (handler: (width: number) => void): () => void => {
   }
 }
 
+export const onMaxLineNumChange = (handler: (maxLineNum: number) => void): () => void => {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+  const eventEmitter = new NativeEventEmitter(LyricModule)
+  const eventListener = eventEmitter.addListener('set-max-line-num', event => {
+    handler((event as { maxLineNum: number }).maxLineNum)
+  })
+
+  return () => {
+    eventListener.remove()
+  }
+}
+
 export const onLyricLinePlay = (handler: (lineInfo: { text: string, extendedLyrics: string[] }) => void): () => void => {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
   const eventEmitter = new NativeEventEmitter(LyricModule)
