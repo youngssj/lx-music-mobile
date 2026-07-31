@@ -204,6 +204,7 @@ public class LyricModule extends ReactContextBaseJavaModule {
   public void checkOverlayPermission(Promise promise) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(reactContext)) {
       promise.reject(new Exception("Permission denied"));
+      return;
     }
     promise.resolve(null);
   }

@@ -247,6 +247,18 @@ export const onPositionChange = (handler: (position: { x: number, y: number }) =
   }
 }
 
+export const onWidthChange = (handler: (width: number) => void): () => void => {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+  const eventEmitter = new NativeEventEmitter(LyricModule)
+  const eventListener = eventEmitter.addListener('set-width', event => {
+    handler((event as { width: number }).width)
+  })
+
+  return () => {
+    eventListener.remove()
+  }
+}
+
 export const onLyricLinePlay = (handler: (lineInfo: { text: string, extendedLyrics: string[] }) => void): () => void => {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
   const eventEmitter = new NativeEventEmitter(LyricModule)

@@ -24,9 +24,11 @@ import android.util.Log;
 import android.util.TypedValue;
 import android.view.Display;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.OrientationEventListener;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.widget.TextView;
@@ -68,6 +70,24 @@ public class LyricView extends Activity implements View.OnTouchListener {
   private float downX;
   private float downY;
   private long downTime;
+
+  // 边缘长按拖拽调整大小（resize）
+  private static final int MODE_NONE = 0;     // 未确定（可能在等长按）
+  private static final int MODE_MOVE = 1;     // 拖动移动窗口
+  private static final int MODE_RESIZE = 2;   // 边缘长按后拖动调整大小
+  private static final int EDGE_LEFT = 1;
+  private static final int EDGE_RIGHT = 2;
+  private static final int LONG_PRESS_TIMEOUT = 300; // 边缘长按判定时长(ms)
+  private int touchMode = MODE_NONE;
+  private int activeEdge = 0;          // 当前长按的边缘（EDGE_LEFT / EDGE_RIGHT）
+  private boolean longPressPending;    // 是否在等待边缘长按判定
+  private float downViewX;             // 按下时相对窗口的坐标（用于边缘判定）
+  private int touchSlop;               // 触摸 slop（区分点击/拖动）
+  private int edgeSlop;                // 边缘判定宽度(px)
+  // resize 起始基准（按下时快照，用相对 delta 计算以规避坐标系偏移）
+  private int resizeStartWidth;
+  private int resizeStartX;
+  private int resizeRightEdge;
 
   private boolean isLock = false;
   private boolean isSingleLine = false;
@@ -122,6 +142,8 @@ public class LyricView extends Activity implements View.OnTouchListener {
 
   final Handler fixViewPositionHandler;
   final Runnable fixViewPositionRunnable = this::updateViewPosition;
+  // 边缘长按判定回调（到达时长后进入 resize 模式）
+  final Runnable edgeLongPressRunnable = this::onEdgeLongPress;
 
   // 毛玻璃模糊半径(px)。Android 12+ 用于 setBlurBehindRadius；设备不支持时由背景 drawable 兜底。
   private int blurBehindRadiusPx = 0;
@@ -132,6 +154,9 @@ public class LyricView extends Activity implements View.OnTouchListener {
     fixViewPositionHandler = new Handler();
     blurBehindRadiusPx = (int) TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, 20f, reactContext.getResources().getDisplayMetrics());
+    touchSlop = ViewConfiguration.get(reactContext).getScaledTouchSlop();
+    edgeSlop = (int) TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP, 22f, reactContext.getResources().getDisplayMetrics());
   }
 
   /**
@@ -162,6 +187,21 @@ public class LyricView extends Activity implements View.OnTouchListener {
     bg.setCornerRadius(10f * density);
     bg.setStroke((int) (1f * density), 0x66FFFFFF);
     bg.setAlpha((int) (backgroundAlpha * 255));
+    return bg;
+  }
+
+  /**
+   * 长按边缘进入 resize 模式时的高亮背景：加粗亮色边框 + 略增不透明度，
+   * 让用户明显感知已进入"调整大小"状态。
+   */
+  private GradientDrawable buildResizeBackground() {
+    float density = reactContext.getResources().getDisplayMetrics().density;
+    GradientDrawable bg = new GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM,
+        new int[]{ 0xD9000000, 0xB3000000 });
+    bg.setCornerRadius(10f * density);
+    bg.setStroke((int) (2f * density), 0xFFFFFFFF); // 加粗白色高亮边框
+    bg.setAlpha((int) (Math.min(1f, backgroundAlpha + 0.15f) * 255));
     return bg;
   }
 
@@ -289,6 +329,16 @@ public class LyricView extends Activity implements View.OnTouchListener {
     params.putDouble("x", x);
     params.putDouble("y", y);
     lyricEvent.sendEvent(lyricEvent.SET_VIEW_POSITION, params);
+  }
+
+  public void sendWidthEvent() {
+    // 上报宽度百分比给 JS 持久化（与 desktopLyric.width 设置项一致，范围 10~100）
+    int percent = Math.round(widthPercentage * 100f);
+    if (percent < 10) percent = 10;
+    else if (percent > 100) percent = 100;
+    WritableMap params = Arguments.createMap();
+    params.putInt("width", percent);
+    lyricEvent.sendEvent(lyricEvent.SET_VIEW_WIDTH, params);
   }
 
 //  public void permission(){
@@ -613,6 +663,57 @@ public class LyricView extends Activity implements View.OnTouchListener {
     windowManager.updateViewLayout(textView, layoutParams);
   }
 
+  /**
+   * 边缘长按判定到达：进入 resize 模式，给视觉 + 触感反馈。
+   */
+  private void onEdgeLongPress() {
+    if (!longPressPending) return;
+    longPressPending = false;
+    touchMode = MODE_RESIZE;
+    // 以按下时为基准，resize 用相对 delta 计算（规避 raw 坐标与窗口坐标系间的固定偏移）
+    resizeStartWidth = layoutParams.width;
+    resizeStartX = layoutParams.x;
+    resizeRightEdge = layoutParams.x + layoutParams.width;
+    // 视觉反馈 + 触感
+    if (textView != null) {
+      textView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+      if (!isLock) textView.setBackground(buildResizeBackground());
+    }
+  }
+
+  /**
+   * resize 模式下根据手势调整窗口宽度：按住右边缘往右拉变宽、按住左边缘往左拉变宽。
+   */
+  private void handleResize(MotionEvent event) {
+    float delta = event.getRawX() - downX;
+    int minW = (int) (maxWidth * 0.10f); // 与设置项最小值(10%)一致
+    int newWidth;
+    int newX;
+
+    if (activeEdge == EDGE_RIGHT) {
+      // 右边缘随手势移动，左边缘固定
+      newWidth = resizeStartWidth + (int) delta;
+      if (newWidth < minW) newWidth = minW;
+      int limit = maxWidth - resizeStartX; // 右边缘不超出屏幕
+      if (newWidth > limit) newWidth = limit;
+      newX = resizeStartX;
+    } else { // EDGE_LEFT：左边缘随手势移动，右边缘固定
+      newWidth = resizeStartWidth - (int) delta;
+      if (newWidth < minW) newWidth = minW;
+      if (newWidth > maxWidth) newWidth = maxWidth;
+      newX = resizeRightEdge - newWidth;
+      if (newX < 0) { newX = 0; newWidth = resizeRightEdge; }
+    }
+
+    if (newWidth == layoutParams.width && newX == layoutParams.x) return;
+
+    widthPercentage = (float) newWidth / (float) maxWidth;
+    layoutParams.width = newWidth;
+    layoutParams.x = newX;
+    textView.setWidth(newWidth);
+    windowManager.updateViewLayout(textView, layoutParams);
+  }
+
   @Override
   public boolean onTouch(View v, MotionEvent event) {
     int maxX = maxWidth - layoutParams.width;
@@ -629,60 +730,117 @@ public class LyricView extends Activity implements View.OnTouchListener {
         downX = lastX;
         downY = lastY;
         downTime = System.currentTimeMillis();
+        downViewX = event.getX();
+        touchMode = MODE_NONE;
+        longPressPending = false;
+
+        // 锁定状态下窗口不接收触摸(FLAG_NOT_TOUCHABLE)，保险起见仍跳过边缘判定
+        if (!isLock) {
+          int vw = v.getWidth();
+          boolean onLeft = downViewX <= edgeSlop;
+          boolean onRight = downViewX >= vw - edgeSlop;
+          if (onLeft || onRight) {
+            activeEdge = onRight ? EDGE_RIGHT : EDGE_LEFT;
+            longPressPending = true;
+            fixViewPositionHandler.postDelayed(edgeLongPressRunnable, LONG_PRESS_TIMEOUT);
+          }
+        }
         break;
-      case MotionEvent.ACTION_MOVE:
+      case MotionEvent.ACTION_MOVE: {
         // 获取移动时的X，Y坐标
         nowX = event.getRawX();
         nowY = event.getRawY();
-        if (preY == 0){
-          preY = nowY;
+        if (preY == 0) preY = nowY;
+
+        if (touchMode == MODE_RESIZE) {
+          // 边缘长按已确认：拖动调整大小
+          handleResize(event);
+          lastX = nowX;
+          lastY = nowY;
+          break;
         }
-        // 计算XY坐标偏移量
-        tranX = nowX - lastX;
-        tranY = nowY - lastY;
 
-        int x = layoutParams.x + (int)tranX;
-        if (x < 0) x = 0;
-        else if (x > maxX) x = maxX;
-        int y = layoutParams.y + (int)tranY;
-        if (y < 0) y = 0;
-        else if (y > maxY) y = maxY;
-
-        // 移动悬浮窗
-        layoutParams.x = x;
-        layoutParams.y = y;
-        //更新悬浮窗位置
-        windowManager.updateViewLayout(textView, layoutParams);
-        //记录当前坐标作为下一次计算的上一次移动的位置坐标
-        lastX = nowX;
-        lastY = nowY;
-        break;
-      case MotionEvent.ACTION_UP:
-        // 检测是否为点击（移动距离小且时间短）
-        float dx = event.getRawX() - downX;
-        float dy = event.getRawY() - downY;
-        float distance = (float) Math.sqrt(dx * dx + dy * dy);
-        long duration = System.currentTimeMillis() - downTime;
-        if (distance < 20 && duration < 500) {
-          // 点击：启动应用主界面
-          Intent launchIntent = reactContext.getPackageManager().getLaunchIntentForPackage(reactContext.getPackageName());
-          if (launchIntent != null) {
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            reactContext.startActivity(launchIntent);
+        // 未进入 resize：越过 slop 即确定为"移动"，并取消挂起的长按判定
+        if (touchMode == MODE_NONE) {
+          float ddx = nowX - downX;
+          float ddy = nowY - downY;
+          if (ddx * ddx + ddy * ddy > touchSlop * touchSlop) {
+            if (longPressPending) {
+              longPressPending = false;
+              fixViewPositionHandler.removeCallbacks(edgeLongPressRunnable);
+            }
+            touchMode = MODE_MOVE;
           }
         }
+        if (touchMode == MODE_MOVE) {
+          // 计算XY坐标偏移量
+          tranX = nowX - lastX;
+          tranY = nowY - lastY;
 
-        //根据移动的位置来判断
-        // dy = 0;
-        tranY = 0;
-        float percentageX = (float)layoutParams.x / (float) maxWidth * 100f;
-        float percentageY = (float)layoutParams.y / (float) maxHeight * 100f;
-        if (percentageX != prevViewPercentageX || percentageY != prevViewPercentageY) {
-          prevViewPercentageX = percentageX / 100f;
-          prevViewPercentageY = percentageY / 100f;
-          sendPositionEvent(percentageX, percentageY);
+          int x = layoutParams.x + (int)tranX;
+          if (x < 0) x = 0;
+          else if (x > maxX) x = maxX;
+          int y = layoutParams.y + (int)tranY;
+          if (y < 0) y = 0;
+          else if (y > maxY) y = maxY;
+
+          // 移动悬浮窗
+          layoutParams.x = x;
+          layoutParams.y = y;
+          //更新悬浮窗位置
+          windowManager.updateViewLayout(textView, layoutParams);
+          //记录当前坐标作为下一次计算的上一次移动的位置坐标
+          lastX = nowX;
+          lastY = nowY;
         }
         break;
+      }
+      case MotionEvent.ACTION_UP:
+      case MotionEvent.ACTION_CANCEL: {
+        // 取消可能挂起的长按判定
+        if (longPressPending) {
+          longPressPending = false;
+          fixViewPositionHandler.removeCallbacks(edgeLongPressRunnable);
+        }
+
+        boolean wasResizing = touchMode == MODE_RESIZE;
+
+        if (touchMode == MODE_NONE) {
+          // 检测是否为点击（移动距离小且时间短）
+          float dx = event.getRawX() - downX;
+          float dy = event.getRawY() - downY;
+          float distance = (float) Math.sqrt(dx * dx + dy * dy);
+          long duration = System.currentTimeMillis() - downTime;
+          if (distance < 20 && duration < 500) {
+            // 点击：启动应用主界面
+            Intent launchIntent = reactContext.getPackageManager().getLaunchIntentForPackage(reactContext.getPackageName());
+            if (launchIntent != null) {
+              launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+              reactContext.startActivity(launchIntent);
+            }
+          }
+        } else {
+          // 移动 / 左边缘缩放都可能改变窗口位置，统一上报位置
+          float percentageX = (float)layoutParams.x / (float) maxWidth * 100f;
+          float percentageY = (float)layoutParams.y / (float) maxHeight * 100f;
+          if (percentageX != prevViewPercentageX || percentageY != prevViewPercentageY) {
+            prevViewPercentageX = percentageX / 100f;
+            prevViewPercentageY = percentageY / 100f;
+            sendPositionEvent(percentageX, percentageY);
+          }
+          // resize 结束：上报宽度给 JS 持久化
+          if (wasResizing) sendWidthEvent();
+        }
+
+        // 退出 resize：恢复普通背景
+        if (wasResizing && textView != null && !isLock) {
+          textView.setBackground(buildLyricBackground());
+        }
+
+        touchMode = MODE_NONE;
+        activeEdge = 0;
+        break;
+      }
     }
     return true;
   }

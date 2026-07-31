@@ -23,6 +23,7 @@ import {
   checkOverlayPermission,
   openOverlayPermissionActivity,
   onPositionChange,
+  onWidthChange,
 } from '@/utils/nativeModules/lyricDesktop'
 import settingState from '@/store/setting/state'
 import { AppState, type AppStateStatus } from 'react-native'
@@ -110,6 +111,7 @@ export const setDesktopLyricTextPosition = async(x: LX.AppSetting['desktopLyric.
 export const checkDesktopLyricOverlayPermission = checkOverlayPermission
 export const openDesktopLyricOverlayPermissionActivity = openOverlayPermissionActivity
 export const onDesktopLyricPositionChange = onPositionChange
+export const onDesktopLyricWidthChange = onWidthChange
 
 
 export const showRemoteLyric = async(isSend: boolean) => {
