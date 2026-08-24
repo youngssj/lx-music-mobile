@@ -55,11 +55,9 @@ export default async(setting: LX.AppSetting) => {
     else if (action === 'next') void handlePlayerAction('skipNext')
     else if (action === 'playPause') void handlePlayerAction('togglePlay')
   })
-  // 浮窗关闭（已二次确认）→ 关闭并禁用，持久化
+  // 浮窗关闭（已二次确认）→ 仅在当前运行期关闭
   onDesktopLyricClose(() => {
     void hideDesktopLyric()
-    updateSetting({ 'desktopLyric.enable': false })
-    saveSettingNow()
   })
   onLyricLinePlay(({ text, extendedLyrics }) => {
     if (!text && !state.isPlaying) {

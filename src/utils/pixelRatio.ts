@@ -5,7 +5,7 @@
  * width:375
  * height:667
  */
-import { PixelRatio } from 'react-native'
+import { Dimensions, PixelRatio } from 'react-native'
 import { windowSizeTools } from './windowSizeTools'
 
 // 高保真的宽度和高度
@@ -13,25 +13,37 @@ const designWidth = 375.0
 const designHeight = 667.0
 
 // 获取屏幕的dp
-const size = windowSizeTools.getSize()
-// console.log('size', size)
-let screenW = size.width
-let screenH = size.height
-if (screenW > screenH) {
-  const temp = screenW
-  screenW = screenH
-  screenH = temp
-}
-let fontScale = PixelRatio.getFontScale()
-let pixelRatio = PixelRatio.get()
-// 根据dp获取屏幕的px
-let screenPxW = PixelRatio.getPixelSizeForLayoutSize(screenW)
-let screenPxH = PixelRatio.getPixelSizeForLayoutSize(screenH)
-// console.log(screenPxW, screenPxH)
+let screenW = 0
+let screenH = 0
+let fontScale = 1
+let pixelRatio = 1
+let screenPxW = 0
+let screenPxH = 0
+let scale = 1
 
-const scaleW = screenPxW / designWidth
-const scaleH = screenPxH / designHeight
-const scale = Math.min(scaleW, scaleH, 3.1)
+const updateMetrics = (size: { width: number, height: number }) => {
+  if (!size.width || !size.height) return
+
+  screenW = size.width
+  screenH = size.height
+  if (screenW > screenH) {
+    const temp = screenW
+    screenW = screenH
+    screenH = temp
+  }
+  fontScale = PixelRatio.getFontScale()
+  pixelRatio = PixelRatio.get()
+  screenPxW = PixelRatio.getPixelSizeForLayoutSize(screenW)
+  screenPxH = PixelRatio.getPixelSizeForLayoutSize(screenH)
+
+  const scaleW = screenPxW / designWidth
+  const scaleH = screenPxH / designHeight
+  scale = Math.min(scaleW, scaleH, 3.1)
+}
+
+const initialSize = windowSizeTools.getSize()
+updateMetrics(initialSize.width && initialSize.height ? initialSize : Dimensions.get('window'))
+windowSizeTools.onSizeChanged(updateMetrics)
 // console.log(scale)
 
 /**

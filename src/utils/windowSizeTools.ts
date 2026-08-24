@@ -51,6 +51,7 @@ export const windowSizeTools = {
         height: Math.round(window.height) + (StatusBar.currentHeight ?? 0),
       }
     }
+    for (const handler of this.listeners) handler(this.size)
     // console.log('init windowSizeTools')
     return size
   },
