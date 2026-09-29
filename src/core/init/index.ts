@@ -12,9 +12,11 @@ import { setApiSource } from '@/core/apiSource'
 import commonActions from '@/store/common/action'
 import settingState from '@/store/setting/state'
 import { bootLog } from '@/utils/bootLog'
+import { initVoice, resumeVoice } from '@/core/voice'
 
 let isFirstPush = true
 const handlePushedHomeScreen = async() => {
+  void resumeVoice()
   // 启动时跳过「谨防被骗」「许可协议」弹窗，标记为已同意协议以保持状态一致
   if (!settingState.setting['common.isAgreePact']) updateSetting({ 'common.isAgreePact': true })
   if (isFirstPush) {
@@ -51,6 +53,7 @@ export default async() => {
   await dataInit(setting)
   bootLog('Data inited.')
   await initCommonState(setting)
+  initVoice()
   bootLog('Common State inited.')
 
   void initSync(setting)

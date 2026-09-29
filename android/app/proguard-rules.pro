@@ -15,6 +15,9 @@
 
 -keep class org.jaudiotagger.tag.** { *; }
 
+# sherpa-onnx JNI resolves these classes and fields by name.
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+
 
 -keep public class com.dylanvann.fastimage.* {*;}
 -keep public class com.dylanvann.fastimage.** {*;}

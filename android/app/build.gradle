@@ -109,6 +109,10 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace "cn.toside.music.mobile"
+    androidResources {
+        noCompress += ['onnx']
+        ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:CVS:thumbs.db:picasa.ini:*~:*.part:*.tar.bz2'
+    }
     defaultConfig {
         applicationId "cn.toside.music.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -193,6 +197,7 @@ dependencies {
     // implementation "androidx.javascriptengine:javascriptengine:1.0.0-alpha07"
     // implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation 'wang.harlon.quickjs:wrapper-android:2.4.0'
+    implementation files('libs/sherpa-onnx-1.13.8.aar')
 
   if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
@@ -202,3 +207,30 @@ dependencies {
 }
 
 apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)
+
+tasks.register('verifyVoiceAssets') {
+    doLast {
+        def required = [
+            'libs/sherpa-onnx-1.13.8.aar': 50129134L,
+            'src/main/assets/voice/kws/encoder.int8.onnx': 4600657L,
+            'src/main/assets/voice/kws/decoder.onnx': 759829L,
+            'src/main/assets/voice/kws/joiner.int8.onnx': 86629L,
+            'src/main/assets/voice/kws/tokens.txt': 1928L,
+            'src/main/assets/voice/asr/model.int8.onnx': 239233841L,
+            'src/main/assets/voice/silero_vad.onnx': 643854L,
+        ]
+        required.each { path, size ->
+            if (!file(path).exists() || file(path).length() != size) {
+                throw new GradleException("Offline voice resource missing/incomplete: ${path}. Run npm run voice:prepare.")
+            }
+        }
+        if (!file('src/main/assets/voice/asr/tokens.txt').exists()) {
+            throw new GradleException('SenseVoice tokens missing. Run npm run voice:prepare.')
+        }
+        if (!file('src/main/assets/voice/kws/keywords.txt').exists() ||
+            file('src/main/assets/voice/kws/keywords.txt').text.trim().isEmpty()) {
+            throw new GradleException('Offline voice keywords file missing or empty.')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn('verifyVoiceAssets') }

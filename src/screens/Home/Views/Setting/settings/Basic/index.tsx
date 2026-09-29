@@ -3,6 +3,7 @@ import { memo } from 'react'
 import Theme from '../Theme'
 import Section from '../../components/Section'
 import Source from './Source'
+import Voice from './Voice'
 import SourceName from './SourceName'
 import Language from './Language'
 import FontSize from './FontSize'
@@ -41,6 +42,7 @@ export default memo(() => {
       <ShareType />
       <Source />
       <SourceName />
+      <Voice />
     </Section>
   )
 })

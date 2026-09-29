@@ -4,6 +4,8 @@
   "versionCode": 74003,
   "private": true,
   "scripts": {
+    "voice:prepare": "pwsh -NoProfile -File scripts/prepare-voice.ps1",
+    "voice:test": "node scripts/test-voice.cjs && node scripts/test-voice-core.cjs && node scripts/test-voice-assets.cjs",
     "postinstall": "patch-package",
     "dev": "react-native run-android --active-arch-only",
     "ios": "react-native run-ios",
@@ -18,6 +20,7 @@
     "pack:android:debug": "./gradlew assembleDebug",
     "pack": "npm run pack:android",
     "pack:android": "cd android && gradlew.bat assembleRelease",
+    "pack:android:test": "cd android && gradlew.bat assembleRelease -PMYAPP_UPLOAD_STORE_FILE=debug.keystore -PMYAPP_UPLOAD_STORE_PASSWORD=android -PMYAPP_UPLOAD_KEY_ALIAS=androiddebugkey -PMYAPP_UPLOAD_KEY_PASSWORD=android",
     "clear": "cd android && gradlew.bat clean",
     "clear:full": "git clean -fdx -e android/keystore.properties -e android/app/*.keystore",
     "build:theme": "node src/theme/themes/createThemes.js",

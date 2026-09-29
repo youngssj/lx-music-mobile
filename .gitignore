@@ -71,3 +71,12 @@ buck-out/
 
 # testing
 /coverage
+
+# Downloaded offline voice runtime and models (scripts/prepare-voice.ps1)
+/.voice-downloads/
+/android/app/libs/sherpa-onnx-*.aar
+/android/app/src/main/assets/voice/**/*.onnx
+/android/app/src/main/assets/voice/**/tokens.txt
+/android/app/src/main/assets/voice/silero_vad.onnx
+/android/app/src/main/assets/voice/**/*.part
+/android/app/src/main/assets/voice/*.tar.bz2

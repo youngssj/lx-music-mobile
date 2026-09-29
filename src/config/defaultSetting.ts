@@ -1,5 +1,6 @@
 const defaultSetting: LX.AppSetting = {
   version: '2.0',
+  'voice.enabled': false,
   'common.isAutoTheme': false,
   'common.langId': null,
   'common.apiSource': '',

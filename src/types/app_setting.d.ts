@@ -6,6 +6,7 @@ declare global {
 
     interface AppSetting {
       version: string
+      'voice.enabled': boolean
       /**
        * 是否跟随系统切换亮暗主题
        */

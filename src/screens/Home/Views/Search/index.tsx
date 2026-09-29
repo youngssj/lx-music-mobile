@@ -54,9 +54,19 @@ export default () => {
       listRef.current?.loadList(searchState.searchText, searchInfo.current.source, type)
     }
     global.app_event.on('searchTypeChanged', handleTypeChange)
+    const handleVoiceSearch = (text: string) => {
+      searchInfo.current.searchType = 'music'
+      searchInfo.current.source = 'all'
+      headerBarRef.current?.setSourceList(searchMusicState.sources, 'all')
+      headerBarRef.current?.setText(text)
+      searchTipListRef.current?.hide()
+      listRef.current?.loadList(text, 'all', 'music')
+    }
+    global.app_event.on('voiceSearch', handleVoiceSearch)
 
     return () => {
       global.app_event.off('searchTypeChanged', handleTypeChange)
+      global.app_event.off('voiceSearch', handleVoiceSearch)
     }
   }, [])
 

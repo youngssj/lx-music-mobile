@@ -1,0 +1,22 @@
+Offline voice components
+
+sherpa-onnx v1.13.8
+Copyright k2-fsa/sherpa-onnx contributors. Apache License 2.0.
+https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.8
+
+Keyword model: sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20
+https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html
+
+SenseVoice INT8 model, 2024-07-17
+Model license notice refers to FunASR:
+https://github.com/modelscope/FunASR#license
+Model source: https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17
+SHA256: c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51
+
+Silero VAD
+Copyright Silero Team. MIT License.
+https://github.com/snakers4/silero-vad
+
+ONNX Runtime
+Copyright Microsoft Corporation. MIT License.
+https://github.com/microsoft/onnxruntime

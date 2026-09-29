@@ -16,6 +16,7 @@ import { getSelectedManagedFolder, saveFontSize, saveViewPrevState, setSelectedM
 import { showPactModal as handleShowPactModal } from '@/navigation'
 import { hideDesktopLyricView } from '@/utils/nativeModules/lyricDesktop'
 import { getPersistedUriList, selectManagedFolder } from '@/utils/fs'
+import { stopVoice } from '@/utils/nativeModules/voice'
 
 
 const throttleSaveSetting = throttle(() => {
@@ -64,6 +65,7 @@ export const exitApp = (reason: string) => {
   if (isDestroying) return
   isDestroying = true
   void Promise.all([
+    stopVoice(),
     hideDesktopLyric(),
     destroyPlayer(),
     hideDesktopLyricView(),
