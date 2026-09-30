@@ -23,6 +23,9 @@ export default () => {
     void getSearchSetting().then(info => {
       setType(info.type)
     })
+    const handleVoiceSearch = (_text: string, type: SearchType = 'music') => { setType(type) }
+    global.app_event.on('voiceSearch', handleVoiceSearch)
+    return () => { global.app_event.off('voiceSearch', handleVoiceSearch) }
   }, [])
 
   const list = useMemo(() => {

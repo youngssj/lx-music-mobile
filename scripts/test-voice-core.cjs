@@ -28,7 +28,7 @@ let found = Promise.resolve([{ source: 'kw', id: 'song' }])
 let searchFailure = false
 let searchResults = [{ source: 'kw', id: 'searched' }]
 let actionFailure = false
-global.app_event = { voiceSearch: text => calls.push(['searchUI', text]) }
+global.app_event = { voiceSearch: (text, type = 'music') => calls.push(['searchUI', text, type]) }
 const core = load('../src/core/voice/index.ts', {
   'react-native': {
     AppState: { currentState: 'active', addEventListener() {} }, Platform: { OS: 'android', Version: 32 },
@@ -46,6 +46,7 @@ const core = load('../src/core/voice/index.ts', {
     if (searchFailure) throw new Error('Network unavailable')
     calls.push(['search', text]); return searchResults
   } },
+  '@/core/search/songlist': { search: async text => { calls.push(['songlistSearch', text]); return [{ source: 'kw', id: 'playlist' }] } },
   '@/core/search/search': { setSearchText() {}, setSearchType() {}, addHistoryWord: async () => {} },
   '@/utils/data': { saveSearchSetting: async () => {} },
   '@/core/player/tempPlayList': { addTempPlayList: list => calls.push(['queue', list]) },
@@ -122,7 +123,7 @@ async function run() {
 
   emit({ status: 'result', text: '搜索晴天' })
   await settle()
-  assert.deepEqual(calls.filter(call => call[0] === 'searchUI').at(-1), ['searchUI', '晴天'])
+  assert.deepEqual(calls.filter(call => call[0] === 'searchUI').at(-1), ['searchUI', '晴天', 'music'])
   assert.deepEqual(calls.filter(call => call[0] === 'speak').slice(-2), [['speak', 'searching'], ['speak', 'search_done']])
   searchResults = []
   emit({ status: 'result', text: '搜索不存在的歌曲' })
@@ -135,9 +136,20 @@ async function run() {
   searchFailure = false
   player.playMusicInfo.musicInfo = null
 
+  emit({ status: 'result', text: '搜索赵雷的歌单' })
+  await settle()
+  assert.deepEqual(calls.filter(call => call[0] === 'songlistSearch').at(-1), ['songlistSearch', '赵雷'])
+  assert.deepEqual(calls.filter(call => call[0] === 'searchUI').at(-1), ['searchUI', '赵雷', 'songlist'])
+
+  searchResults = [{ source: 'kw', id: 'other-artist', name: '歌', singer: '其他人' }, { source: 'kw', id: 'zhaolei', name: '南方姑娘', singer: '赵雷' }]
+  emit({ status: 'result', text: '播放赵雷的歌' })
+  await settle()
+  assert.equal(calls.filter(call => call[0] === 'queue').at(-1)[1][0].musicInfo.id, 'zhaolei')
+  searchResults = []
+
   emit({ status: 'result', text: '播放晴天' })
   await settle()
-  assert.equal(calls.filter(call => call[0] === 'queue').length, 1)
+  assert.equal(calls.filter(call => call[0] === 'queue').length, 2)
   assert.equal(calls.filter(call => call[0] === 'next').length, 0)
   assert.deepEqual(calls.at(-1), ['speak', 'search_play'])
   player.playMusicInfo.musicInfo = { id: 'current' }
@@ -145,22 +157,31 @@ async function run() {
   await settle()
   assert.equal(calls.filter(call => call[0] === 'next').length, 1)
 
+  searchResults = [{ source: 'kw', id: 'wrong-artist', name: '光年之外', singer: '其他人' }, { source: 'kw', id: 'right-artist', name: '光年之外', singer: '邓紫棋' }]
+  const queuedBeforeArtist = calls.filter(call => call[0] === 'queue').length
+  emit({ status: 'result', text: '播放邓紫棋唱的光年之外' })
+  await settle()
+  assert.equal(calls.filter(call => call[0] === 'queue').length, queuedBeforeArtist + 1)
+  assert.equal(calls.filter(call => call[0] === 'queue').at(-1)[1][0].musicInfo.id, 'right-artist')
+  searchResults = []
+
   found = Promise.resolve([{ source: 'unsupported', id: 'unplayable' }])
   emit({ status: 'result', text: '播放晴天' })
   await settle()
-  assert.equal(calls.filter(call => call[0] === 'queue').length, 2)
+  assert.equal(calls.filter(call => call[0] === 'queue').length, 4)
   assert.deepEqual(calls.at(-1), ['speak', 'song_not_found'])
 
   let resolveSearch
   found = new Promise(resolve => { resolveSearch = resolve })
   emit({ status: 'result', text: '播放晴天' })
   await settle()
-  await core.disableVoice()
+  emit({ status: 'recording', text: '' })
   resolveSearch([{ source: 'kw', id: 'late-result' }])
   const spokenBeforeCancel = calls.filter(call => call[0] === 'speak').length
   await settle()
-  assert.equal(calls.filter(call => call[0] === 'queue').length, 2)
+  assert.equal(calls.filter(call => call[0] === 'queue').length, 4)
   assert.equal(calls.filter(call => call[0] === 'speak').length, spokenBeforeCancel)
+  await core.disableVoice()
   assert.equal(calls.filter(call => call[0] === 'toast').length, 0)
   console.log('Voice integration checks passed: permissions, duck/restore, search, playback and cancellation.')
 }

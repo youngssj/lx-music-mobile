@@ -34,6 +34,7 @@ for (const key of Object.keys(prompts)) {
 }
 assert.ok(service.includes('keywordsFile = "voice/kws/keywords.txt"'))
 assert.ok(service.includes('stream = spotter.createStream()'))
+assert.ok(service.includes('"loading" -> null') && service.includes('"listening" -> null'), 'Startup must remain silent')
 const keywords = fs.readFileSync(path.join(root, 'android/app/src/main/assets/voice/kws/keywords.txt'), 'utf8').trim()
 assert.ok(keywords.length > 0)
 const tokenPath = path.join(root, 'android/app/src/main/assets/voice/kws/tokens.txt')

@@ -2,6 +2,7 @@ import { AppState, PermissionsAndroid, Platform } from 'react-native'
 import { updateSetting, setNavActiveId } from '@/core/common'
 import { handlePlayerAction } from '@/core/init/deeplink/playerAction'
 import { search } from '@/core/search/music'
+import { search as searchSonglist } from '@/core/search/songlist'
 import { setSearchText, setSearchType, addHistoryWord } from '@/core/search/search'
 import { saveSearchSetting } from '@/utils/data'
 import { addTempPlayList } from '@/core/player/tempPlayList'
@@ -23,6 +24,7 @@ let commandGeneration = 0
 let lastTranscript = ''
 const listeners = new Set<(state: VoiceState) => void>()
 let state: VoiceState = { status: 'stopped', text: '' }
+const normalizeMusicText = (value: string) => value.replace(/[\s·•()（）【】]/g, '').toLowerCase()
 export const subscribeVoice = (listener: (state: VoiceState) => void) => {
   listeners.add(listener)
   listener(state)
@@ -79,7 +81,7 @@ const execute = async(transcript: string, generation: number) => {
     return
   }
   if (command.action == 'stopListening') return disableVoice()
-  if (command.action != 'search' && command.action != 'searchPlay') {
+  if (command.action != 'search' && command.action != 'searchPlay' && command.action != 'searchSonglist' && command.action != 'playArtist') {
     if (!playerState.playMusicInfo.musicInfo) {
       await speakVoice('no_track')
       return
@@ -90,17 +92,36 @@ const execute = async(transcript: string, generation: number) => {
   }
   await speakVoice('searching')
   if (generation != commandGeneration) return
-  setSearchType('music')
-  setSearchText(command.query)
-  await saveSearchSetting({ type: 'music', source: 'all' })
+  const query = command.action == 'playArtist' ? command.singer : command.query
+  const searchType = command.action == 'searchSonglist' ? 'songlist' : 'music'
+  setSearchType(searchType)
+  setSearchText(query)
+  await saveSearchSetting({ type: searchType, source: 'all' })
   if (generation != commandGeneration) return
-  void addHistoryWord(command.query)
-  if (command.action == 'search') {
-    const results = await search(command.query, 1, 'all')
+  void addHistoryWord(query)
+  if (command.action == 'search' || command.action == 'searchSonglist') {
+    const results = command.action == 'searchSonglist' ? await searchSonglist(query, 1, 'all') : await search(query, 1, 'all')
     if (generation != commandGeneration) return
     setNavActiveId('nav_search')
-    global.app_event.voiceSearch(command.query)
+    global.app_event.voiceSearch(query, searchType)
     await speakVoice(results.length ? 'search_done' : 'search_empty')
+    return
+  }
+  if (command.action == 'playArtist') {
+    const results = await search(command.singer, 1, 'all')
+    if (generation != commandGeneration) return
+    const singer = normalizeMusicText(command.singer)
+    const song = results.find(result => assertApiSupport(result.source) && normalizeMusicText(result.singer).includes(singer))
+    if (!song) {
+      setNavActiveId('nav_search')
+      global.app_event.voiceSearch(query)
+      await speakVoice('song_not_found')
+      return
+    }
+    const hasTrack = playerState.playMusicInfo.musicInfo != null
+    addTempPlayList([{ listId: LIST_IDS.PLAY_LATER, musicInfo: song, isTop: true }])
+    if (hasTrack) await playNext()
+    if (generation == commandGeneration) await speakVoice('search_play')
     return
   }
   const musicInfo: LX.Music.MusicInfoLocal = {
@@ -111,11 +132,24 @@ const execute = async(transcript: string, generation: number) => {
     interval: null,
     meta: { albumName: '', songId: '', filePath: '', ext: '' },
   }
-  const results = await getOtherSource(musicInfo)
+  const results = await search(command.singer ? `${command.singer} ${command.name}` : command.name, 1, 'all')
   if (generation != commandGeneration) return
-  let song = results.find(result => assertApiSupport(result.source))
+  const name = normalizeMusicText(command.name)
+  const singer = normalizeMusicText(command.singer)
+  const matches = (result: LX.Music.MusicInfoOnline) => {
+    const resultName = normalizeMusicText(result.name)
+    const resultSinger = normalizeMusicText(result.singer)
+    return assertApiSupport(result.source) && (resultName == name || resultName.includes(name)) && (!singer || resultSinger.includes(singer))
+  }
+  let song = results.find(matches)
+  if (!song) {
+    // The cross-source song matcher helps when search APIs return no exact title/artist pair.
+    const fallback = await getOtherSource(musicInfo)
+    if (generation != commandGeneration) return
+    song = fallback.find(result => assertApiSupport(result.source) && (!singer || matches(result)))
+  }
   if (!song && command.singer) {
-    // “的” can belong to the title rather than separate artist and song.
+    // “的” can also be part of the title, e.g. “我的天空”.
     const fallback = await getOtherSource({ ...musicInfo, id: `${musicInfo.id}_title`, name: command.query, singer: '' })
     if (generation != commandGeneration) return
     song = fallback.find(result => assertApiSupport(result.source))
@@ -143,6 +177,7 @@ export const initVoice = () => {
     updateVoiceVolume()
   })
   onVoiceState(next => {
+    if (next.status == 'recording') commandGeneration++
     capturing = next.status == 'recording' || next.status == 'recognizing'
     updateVoiceVolume()
     if (next.status == 'result') {

@@ -1,6 +1,8 @@
 type ControlAction = 'play' | 'pause' | 'skipNext' | 'skipPrev' | 'collect' | 'uncollect' | 'stopListening'
 export type VoiceCommand =
   | { action: ControlAction }
+  | { action: 'searchSonglist', query: string }
+  | { action: 'playArtist', singer: string }
   | { action: 'search' | 'searchPlay', query: string, name: string, singer: string }
 
 /** Exact control phrases avoid treating song titles containing “暂停” as controls. */
@@ -30,11 +32,17 @@ export const parseVoiceCommand = (transcript: string): VoiceCommand | null => {
   }
   const control = Object.prototype.hasOwnProperty.call(controls, text) ? controls[text] : undefined
   if (control) return { action: control }
-  const match = /^(搜索歌曲|搜索|搜歌|搜一下|查找|播放歌曲|播放|我想听|听一下|放一首|来一首)(.+)$/.exec(text)
+  const list = /^(?:搜索|搜一下|搜|查找|找)(?:一下)?(.+?)(?:的)?歌单$/.exec(text)
+  if (list?.[1]) return { action: 'searchSonglist', query: list[1] }
+  const searchArtist = /^(?:搜索|搜一下|搜|查找|找)(?:一下)?(.{2,}?)(?:的歌曲|的歌|唱的歌)$/.exec(text)
+  if (searchArtist?.[1]) return { action: 'search', query: searchArtist[1], name: searchArtist[1], singer: '' }
+  const artist = /^(?:播放|放点|来点|我想听|听听|听一下|放一首|来一首|放首|来首)(.{2,}?)(?:的歌曲|的歌|唱的歌|的音乐)$/.exec(text)
+  if (artist?.[1]) return { action: 'playArtist', singer: artist[1] }
+  const match = /^(搜索歌曲|搜索|搜歌|搜一下|查找|找歌|播放歌曲|播放|我想听|听一下|放一首|来一首)(.+)$/.exec(text)
   if (!match) return null
   const query = match[2]
   // A single-character prefix is usually part of a title, e.g. “我的天空”“夜的第七章”.
-  const singerSong = /^(.{2,}?)的(.+)$/.exec(query)
+  const singerSong = /^(.{2,}?)(?:唱的|演唱的|的)(.+)$/.exec(query)
   const action = /^(搜索歌曲|搜索|搜歌|搜一下|查找)$/.test(match[1]) ? 'search' : 'searchPlay'
   return { action, query, name: singerSong?.[2] ?? query, singer: singerSong?.[1] ?? '' }
 }

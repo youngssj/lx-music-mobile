@@ -54,13 +54,13 @@ export default () => {
       listRef.current?.loadList(searchState.searchText, searchInfo.current.source, type)
     }
     global.app_event.on('searchTypeChanged', handleTypeChange)
-    const handleVoiceSearch = (text: string) => {
-      searchInfo.current.searchType = 'music'
+    const handleVoiceSearch = (text: string, type: SearchType = 'music') => {
+      searchInfo.current.searchType = type
       searchInfo.current.source = 'all'
-      headerBarRef.current?.setSourceList(searchMusicState.sources, 'all')
+      headerBarRef.current?.setSourceList(type == 'songlist' ? searchSonglistState.sources : searchMusicState.sources, 'all')
       headerBarRef.current?.setText(text)
       searchTipListRef.current?.hide()
-      listRef.current?.loadList(text, 'all', 'music')
+      listRef.current?.loadList(text, 'all', type)
     }
     global.app_event.on('voiceSearch', handleVoiceSearch)
 

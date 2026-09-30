@@ -76,12 +76,11 @@ class VoiceService : Service() {
     }
 
     private fun publish(nextStatus: String, text: String = "") {
-        val previous = status
         status = nextStatus
         lastText = text
         val feedback = when (nextStatus) {
-            "loading" -> "loading"
-            "listening" -> if (previous == "loading") "ready" else null
+            "loading" -> null
+            "listening" -> null
             "recording" -> "wake_reply"
             "recognizing" -> "recognizing"
             "noSpeech" -> "no_speech"
@@ -154,8 +153,9 @@ class VoiceService : Service() {
                 check(size > 0) { "录音中断（$size）" }
                 val samples = FloatArray(size) { pcm[it] / 32768f }
                 val now = SystemClock.elapsedRealtime()
-                // All announcements (including JS command feedback) bypass both models.
-                if (VoiceFeedback.isPlaying()) {
+                // Keep wake detection active during replies so a new wake can interrupt them.
+                // Once awake, exclude our own reply from command recognition.
+                if (recording && VoiceFeedback.isPlaying()) {
                     awaitingFeedback = true
                     continue
                 }
@@ -174,6 +174,7 @@ class VoiceService : Service() {
                         vad.reset()
                         recording = true
                         awaitingFeedback = true
+                        VoiceFeedback.cancel()
                         publish("recording")
                         // Retain tactile feedback when the media volume is muted.
                         val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator

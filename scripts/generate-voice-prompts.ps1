@@ -7,13 +7,15 @@ $taskVoice = New-Object -ComObject SAPI.SpVoice
 $taskChinese = $taskVoice.GetVoices() | Where-Object { $_.GetDescription() -like '*Huihui*' } | Select-Object -First 1
 if ($null -eq $taskChinese) { throw 'Microsoft Huihui Chinese voice is required to regenerate bundled prompts.' }
 $taskVoice.Voice = $taskChinese
+$taskVoice.Rate = -1
 foreach ($taskPrompt in $taskPrompts.PSObject.Properties) {
     $taskName = 'voice_' + $taskPrompt.Name.ToLowerInvariant() + '.wav'
     $taskFile = New-Object -ComObject SAPI.SpFileStream
     try {
         $taskFile.Open((Join-Path $taskOutput $taskName), 3)
         $taskVoice.AudioOutputStream = $taskFile
-        [void]$taskVoice.Speak($taskPrompt.Value)
+        $taskText = [System.Security.SecurityElement]::Escape($taskPrompt.Value)
+        [void]$taskVoice.Speak("<pitch middle='+2'>$taskText</pitch>", 8)
     } finally { $taskFile.Close() }
 }
 Write-Output "Generated $($taskPrompts.PSObject.Properties.Name.Count) bundled Chinese prompts."

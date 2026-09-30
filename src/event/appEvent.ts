@@ -15,8 +15,8 @@ import { type SearchType } from '@/store/search/state'
 // }
 
 export class AppEvent extends Event {
-  voiceSearch(text: string) {
-    this.emit('voiceSearch', text)
+  voiceSearch(text: string, type: SearchType = 'music') {
+    this.emit('voiceSearch', text, type)
   }
   // configUpdate() {
   //   this.emit('configUpdate')
