@@ -33,7 +33,7 @@
 
 首次构建或在新电脑检出项目后必须运行 `npm run voice:prepare`。引擎 AAR 和模型文件不在 Git 中，缺少这些文件时 `verifyVoiceAssets` 会阻止构建。
 
-普通发布构建使用 `npm run pack:android`（需要 PowerShell 7）；该命令通过 `scripts/build-android.ps1` 限制 prefab 等子 JVM 的内存，结束后恢复原来的 `JAVA_TOOL_OPTIONS`。Gradle 默认使用 2 GB 堆、单个工作线程、两个可用 CPU，并在同一 JVM 内编译 Kotlin；构建结束后退出，避免空闲守护进程持续占用系统提交内存。若崩溃日志中物理内存仍有余量、`AvailPageFile size` 却接近零，说明 Windows 系统提交内存已耗尽，还需要关闭暂时不用的大型应用或在 Windows 设置中为分页文件启用系统管理大小。
+普通发布构建使用 `npm run pack:android`（使用 Windows 自带的 PowerShell，无需安装 PowerShell 7）；该命令通过 `scripts/build-android.ps1` 限制 prefab 等子 JVM 的内存，结束后恢复原来的 `JAVA_TOOL_OPTIONS`。Gradle 默认使用 2 GB 堆、单个工作线程、两个可用 CPU，并在同一 JVM 内编译 Kotlin；构建结束后退出，避免空闲守护进程持续占用系统提交内存。若崩溃日志中物理内存仍有余量、`AvailPageFile size` 却接近零，说明 Windows 系统提交内存已耗尽，还需要关闭暂时不用的大型应用或在 Windows 设置中为分页文件启用系统管理大小。
 
 本机内存紧张时已验证的 ARM64 调试构建命令（在项目根目录的 PowerShell 运行）：
 
