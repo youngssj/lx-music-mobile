@@ -210,6 +210,13 @@ apply from: file("../../node_modules/@react-native-community/cli-platform-androi
 
 tasks.register('verifyVoiceAssets') {
     doLast {
+        def prompts = new groovy.json.JsonSlurper().parse(file('../../src/resources/voice/prompts.json'))
+        prompts.keySet().each { key ->
+            def clip = file("src/main/res/raw/voice_${key.toLowerCase(java.util.Locale.ROOT)}.wav")
+            if (!clip.exists() || clip.length() <= 44) {
+                throw new GradleException("Bundled voice prompt missing/empty: ${key}")
+            }
+        }
         def required = [
             'libs/sherpa-onnx-1.13.8.aar': 50129134L,
             'src/main/assets/voice/kws/encoder.int8.onnx': 4600657L,

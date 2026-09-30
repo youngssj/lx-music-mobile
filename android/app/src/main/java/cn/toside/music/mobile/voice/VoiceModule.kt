@@ -14,6 +14,12 @@ class VoiceModule(private val context: ReactApplicationContext) : ReactContextBa
 
     override fun initialize() {
         super.initialize()
+        VoiceFeedback.emitPlaying = { playing ->
+            if (context.hasActiveReactInstance()) {
+                context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    .emit("voice-feedback", playing)
+            }
+        }
         VoiceService.emitEvent = { status, text ->
             if (context.hasActiveReactInstance()) {
                 val event = Arguments.createMap()
@@ -52,6 +58,11 @@ class VoiceModule(private val context: ReactApplicationContext) : ReactContextBa
     }
 
     @ReactMethod
+    fun speak(key: String, promise: Promise) {
+        VoiceFeedback.speak(context, key) { promise.resolve(null) }
+    }
+
+    @ReactMethod
     fun getState(promise: Promise) {
         val event = Arguments.createMap()
         event.putString("status", VoiceService.status)
@@ -64,6 +75,8 @@ class VoiceModule(private val context: ReactApplicationContext) : ReactContextBa
 
     override fun invalidate() {
         context.stopService(Intent(context, VoiceService::class.java))
+        VoiceFeedback.cancel()
+        VoiceFeedback.emitPlaying = null
         VoiceService.emitEvent = null
         super.invalidate()
     }

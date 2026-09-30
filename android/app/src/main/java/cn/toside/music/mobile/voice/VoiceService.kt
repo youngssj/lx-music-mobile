@@ -76,8 +76,20 @@ class VoiceService : Service() {
     }
 
     private fun publish(nextStatus: String, text: String = "") {
+        val previous = status
         status = nextStatus
         lastText = text
+        val feedback = when (nextStatus) {
+            "loading" -> "loading"
+            "listening" -> if (previous == "loading") "ready" else null
+            "recording" -> "wake_reply"
+            "recognizing" -> "recognizing"
+            "noSpeech" -> "no_speech"
+            "error" -> "error"
+            "stopped" -> "stopped"
+            else -> null // The command result gets a specific spoken response in JS.
+        }
+        if (feedback != null) VoiceFeedback.speak(this, feedback)
         main.post {
             emitEvent?.invoke(nextStatus, text)
             if (running.get()) {
@@ -133,6 +145,7 @@ class VoiceService : Service() {
             val pcm = ShortArray(512)
             var recording = false
             var startedAt = 0L
+            var awaitingFeedback = false
             var cooldownUntil = 0L
             publish("listening")
             while (running.get()) {
@@ -141,6 +154,17 @@ class VoiceService : Service() {
                 check(size > 0) { "录音中断（$size）" }
                 val samples = FloatArray(size) { pcm[it] / 32768f }
                 val now = SystemClock.elapsedRealtime()
+                // All announcements (including JS command feedback) bypass both models.
+                if (VoiceFeedback.isPlaying()) {
+                    awaitingFeedback = true
+                    continue
+                }
+                if (awaitingFeedback) {
+                    awaitingFeedback = false
+                    startedAt = now
+                    vad.reset()
+                    spotter.reset(stream)
+                }
                 if (!recording) {
                     if (now < cooldownUntil) continue
                     stream.acceptWaveform(samples, SAMPLE_RATE)
@@ -149,9 +173,9 @@ class VoiceService : Service() {
                         spotter.reset(stream)
                         vad.reset()
                         recording = true
-                        startedAt = now
+                        awaitingFeedback = true
                         publish("recording")
-                        // Short vibration acknowledges wake-up without contaminating the microphone.
+                        // Retain tactile feedback when the media volume is muted.
                         val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
                         if (Build.VERSION.SDK_INT >= 26) vibrator.vibrate(VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE)) else vibrator.vibrate(60)
                     }
@@ -198,6 +222,8 @@ class VoiceService : Service() {
 
     override fun onDestroy() {
         running.set(false)
+        // Keep the error announcement alive after the microphone service stops.
+        if (status != "error") VoiceFeedback.cancel()
         try { recorder?.stop() } catch (_: Exception) { }
         if (wakeLock?.isHeld == true) wakeLock?.release()
         wakeLock = null

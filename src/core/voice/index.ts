@@ -11,12 +11,14 @@ import playerState from '@/store/player/state'
 import settingState from '@/store/setting/state'
 import { setVolume } from '@/plugins/player/utils'
 import { getOtherSource } from '@/core/music/utils'
-import { assertApiSupport, toast } from '@/utils/tools'
-import { getVoiceState, isVoiceSupported, onVoiceState, startVoice, stopVoice, type VoiceState } from '@/utils/nativeModules/voice'
+import { assertApiSupport } from '@/utils/tools'
+import { getVoiceState, isVoiceSupported, onVoiceFeedback, onVoiceState, speakVoice, startVoice, stopVoice, type VoiceState } from '@/utils/nativeModules/voice'
 import { parseVoiceCommand } from './commands'
 
 let initialized = false
 let ducked = false
+let feedbackPlaying = false
+let capturing = false
 let commandGeneration = 0
 let lastTranscript = ''
 const listeners = new Set<(state: VoiceState) => void>()
@@ -36,10 +38,19 @@ const restoreVolume = () => {
   void setVolume(playerState.volume).catch(() => {})
 }
 
+const updateVoiceVolume = () => {
+  if ((feedbackPlaying || capturing) && playerState.isPlay) {
+    if (ducked) return
+    ducked = true
+    void setVolume(playerState.volume * 0.15).catch(() => {})
+  } else restoreVolume()
+}
+
 export const disableVoice = async() => {
   commandGeneration++
   updateSetting({ 'voice.enabled': false })
-  restoreVolume()
+  capturing = false
+  updateVoiceVolume()
   await stopVoice()
   publish({ status: 'stopped', text: lastTranscript })
 }
@@ -56,27 +67,40 @@ export const enableVoice = async() => {
   updateSetting({ 'voice.enabled': true })
 }
 
+export const reportVoiceError = async(error: Error) => {
+  publish({ status: 'error', text: error.message })
+  await speakVoice(error.message.includes('麦克风') ? 'permission' : error.message.includes('前台') ? 'foreground' : 'start_failed')
+}
+
 const execute = async(transcript: string, generation: number) => {
   const command = parseVoiceCommand(transcript)
   if (!command) {
-    toast('未识别到指令，可说“播放晴天”“下一首”或“暂停”')
+    await speakVoice('unknown_command')
     return
   }
   if (command.action == 'stopListening') return disableVoice()
   if (command.action != 'search' && command.action != 'searchPlay') {
+    if (!playerState.playMusicInfo.musicInfo) {
+      await speakVoice('no_track')
+      return
+    }
     await handlePlayerAction(command.action)
+    if (generation == commandGeneration) await speakVoice(command.action)
     return
   }
+  await speakVoice('searching')
+  if (generation != commandGeneration) return
   setSearchType('music')
   setSearchText(command.query)
   await saveSearchSetting({ type: 'music', source: 'all' })
   if (generation != commandGeneration) return
   void addHistoryWord(command.query)
   if (command.action == 'search') {
-    await search(command.query, 1, 'all')
+    const results = await search(command.query, 1, 'all')
     if (generation != commandGeneration) return
     setNavActiveId('nav_search')
     global.app_event.voiceSearch(command.query)
+    await speakVoice(results.length ? 'search_done' : 'search_empty')
     return
   }
   const musicInfo: LX.Music.MusicInfoLocal = {
@@ -97,14 +121,15 @@ const execute = async(transcript: string, generation: number) => {
     song = fallback.find(result => assertApiSupport(result.source))
   }
   if (!song) {
-    toast('没有找到可播放的歌曲，请尝试加上歌手名')
     setNavActiveId('nav_search')
     global.app_event.voiceSearch(command.query)
+    await speakVoice('song_not_found')
     return
   }
   const hasTrack = playerState.playMusicInfo.musicInfo != null
   addTempPlayList([{ listId: LIST_IDS.PLAY_LATER, musicInfo: song, isTop: true }])
   if (hasTrack) await playNext()
+  if (generation == commandGeneration) await speakVoice('search_play')
 }
 
 export const initVoice = () => {
@@ -113,16 +138,21 @@ export const initVoice = () => {
   AppState.addEventListener('change', status => {
     if (status == 'active') void resumeVoice()
   })
+  onVoiceFeedback(playing => {
+    feedbackPlaying = playing
+    updateVoiceVolume()
+  })
   onVoiceState(next => {
-    if (next.status == 'recording' && playerState.isPlay) {
-      ducked = true
-      void setVolume(playerState.volume * 0.15).catch(() => {})
-    }
-    if (next.status != 'recording' && next.status != 'recognizing') restoreVolume()
+    capturing = next.status == 'recording' || next.status == 'recognizing'
+    updateVoiceVolume()
     if (next.status == 'result') {
       lastTranscript = next.text
       const generation = ++commandGeneration
-      void execute(next.text, generation).catch((error: Error) => { toast(`语音指令执行失败：${error.message}`) })
+      void execute(next.text, generation).catch((error: Error) => {
+        if (generation != commandGeneration) return
+        publish({ status: 'error', text: `语音指令执行失败：${error.message}` })
+        void speakVoice('command_failed')
+      })
     }
     if (next.status == 'error' || next.status == 'stopped') {
       commandGeneration++
@@ -137,13 +167,14 @@ export const resumeVoice = async() => {
   if (!isVoiceSupported || !settingState.setting['voice.enabled'] || AppState.currentState != 'active') return
   if (!await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO)) {
     updateSetting({ 'voice.enabled': false })
+    await reportVoiceError(new Error('需要允许麦克风权限才能唤醒'))
     return
   }
   const current = await getVoiceState()
   if (current.status == 'stopped' || current.status == 'error') {
     try { await startVoice() } catch (error) {
       updateSetting({ 'voice.enabled': false })
-      publish({ status: 'error', text: (error as Error).message })
+      await reportVoiceError(error as Error)
     }
   }
 }

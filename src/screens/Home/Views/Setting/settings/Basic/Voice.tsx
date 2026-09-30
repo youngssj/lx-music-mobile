@@ -4,9 +4,8 @@ import CheckBoxItem from '../../components/CheckBoxItem'
 import SubTitle from '../../components/SubTitle'
 import Text from '@/components/common/Text'
 import { useSettingValue } from '@/store/setting/hook'
-import { disableVoice, enableVoice, subscribeVoice } from '@/core/voice'
+import { disableVoice, enableVoice, reportVoiceError, subscribeVoice } from '@/core/voice'
 import { type VoiceState } from '@/utils/nativeModules/voice'
-import { toast } from '@/utils/tools'
 
 const labels: Record<VoiceState['status'], string> = {
   stopped: '已关闭',
@@ -27,9 +26,7 @@ export default memo(() => {
   const change = (value: boolean) => {
     if (busy) return
     setBusy(true)
-    void (value ? enableVoice() : disableVoice()).catch((error: Error) => {
-      toast(error.message)
-    }).finally(() => { setBusy(false) })
+    void (value ? enableVoice() : disableVoice()).catch(reportVoiceError).finally(() => { setBusy(false) })
   }
   return (
     <View style={{ marginTop: 15 }}>

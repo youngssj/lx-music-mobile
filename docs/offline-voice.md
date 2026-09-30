@@ -1,7 +1,11 @@
 # 安卓离线语音助手
 
 在“设置 → 基本设置 → 离线语音助手”开启后台监听，并授权麦克风及通知。
-唤醒词为“小洛小洛”，看到通知变成“请说指令”或感到短振动后再说指令。
+唤醒词为“小洛小洛”，唤醒成功后会语音回复“我在，请说”并短振动，播报结束后再说指令。回复音频内置在 APK 中，离线播放，无需安装系统语音引擎或中文语音包。播报跟随媒体音量；播报期间的麦克风音频不会送入指令识别。
+
+语音助手的启动、准备就绪、唤醒、识别中、未听清、关闭、权限与错误提示，以及搜索进度、搜索结果、播放控制、收藏反馈和执行失败，均使用内置中文语音播报。界面和通知保留文字状态与详细错误，便于排查。播报按队列依次播放；音乐播放时会降低歌曲音量，播报和收音结束后恢复。
+
+播报文案：`src/resources/voice/prompts.json`；内置音频：`android/app/src/main/res/raw/voice_*.wav`，使用 Microsoft Huihui 中文语音预先合成。修改文案后，在安装有 Huihui 语音的 Windows 电脑运行 `pwsh -File scripts/generate-voice-prompts.ps1` 重新生成并提交音频，无需给手机安装运行时语音合成模型。新增文案时同时添加 `VoiceFeedback.kt` 中的资源映射。缺少播报音频时构建会报错。
 
 支持：搜索晴天、播放周杰伦的晴天、暂停、继续播放、上一首、下一首、收藏这首歌、取消收藏、关闭语音助手。
 “搜索”展示聚合搜索结果，“播放”通过现有换源匹配逻辑查找歌曲并立即播放。
@@ -24,8 +28,24 @@
 
 当前验证：指令解析与业务联动测试通过、新增 TypeScript/TSX 文件 Lint 通过、
 生产 JS bundle 打包通过、VoiceService 使用实际安卓 SDK 和引擎 AAR 独立编译通过。
-完整 APK 构建尚未完成（Gradle 8.8 下载受网络速度限制），后台/锁屏唤醒仍需实机验收。
+发布 APK 构建（含 R8 优化和签名打包）及 ARM64 调试 APK 构建已通过，语音服务已使用实际 Android SDK 36 和 sherpa-onnx AAR 编译验证；后台/锁屏唤醒仍需实机验收。默认全架构调试构建目前另有 `react-native-quick-base64` 的 x86 原生库匹配错误，不能将 ARM64 调试验证报告为全架构调试通过。
 项目全量 Lint 和 TypeScript 检查存在原有错误，不能将这些检查报告为全量通过。
+
+首次构建或在新电脑检出项目后必须运行 `npm run voice:prepare`。引擎 AAR 和模型文件不在 Git 中，缺少这些文件时 `verifyVoiceAssets` 会阻止构建。
+
+普通发布构建使用 `npm run pack:android`（需要 PowerShell 7）；该命令通过 `scripts/build-android.ps1` 限制 prefab 等子 JVM 的内存，结束后恢复原来的 `JAVA_TOOL_OPTIONS`。Gradle 默认使用 2 GB 堆、单个工作线程、两个可用 CPU，并在同一 JVM 内编译 Kotlin；构建结束后退出，避免空闲守护进程持续占用系统提交内存。若崩溃日志中物理内存仍有余量、`AvailPageFile size` 却接近零，说明 Windows 系统提交内存已耗尽，还需要关闭暂时不用的大型应用或在 Windows 设置中为分页文件启用系统管理大小。
+
+本机内存紧张时已验证的 ARM64 调试构建命令（在项目根目录的 PowerShell 运行）：
+
+```powershell
+$env:JAVA_TOOL_OPTIONS = '-Xms64m -Xmx512m'
+Push-Location android
+try {
+  .\gradlew.bat assembleDebug --no-daemon --max-workers=1 '-Dorg.gradle.jvmargs=-Xms64m -Xmx2048m -XX:MaxMetaspaceSize=1024m' '-Pkotlin.compiler.execution.strategy=in-process' '-PreactNativeArchitectures=arm64-v8a'
+} finally { Pop-Location }
+```
+
+调试 APK 位于 `android/app/build/outputs/apk/debug/`，运行时需要 Metro 开发服务器；发布 APK 位于 `android/app/build/outputs/apk/release/`，已内置 JavaScript bundle 和离线语音模型。
 
 资源来源：
 
